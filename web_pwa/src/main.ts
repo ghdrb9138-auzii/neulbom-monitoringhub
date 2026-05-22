@@ -3,11 +3,14 @@ import {
   FilesetResolver,
   type FaceLandmarkerResult,
 } from "@mediapipe/tasks-vision";
+import { registerSW } from "virtual:pwa-register";
 
 import { computeBothEAR, type Point2D } from "./ear";
 import { decomposeEuler } from "./headPose";
 import { applyAlarmMask, drawEyes, drawStatus } from "./overlay";
 import { Detector } from "./stateMachine";
+
+registerSW({ immediate: true });
 
 const WASM_BASE =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm";
