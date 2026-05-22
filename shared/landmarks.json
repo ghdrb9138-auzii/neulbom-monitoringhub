@@ -1,0 +1,15 @@
+{
+  "_description": "MediaPipe Face Mesh landmark indices used by Neulbom drowsiness + head-pose detector. Single source of truth shared by data_test/ (Python PoC) and web_pwa/ (browser PoC).",
+  "_model": "MediaPipe Face Mesh (468 landmarks, refine_landmarks=False). Indices are stable across Python and JS SDKs.",
+  "eye": {
+    "_order": ["outer_corner", "upper_outer", "upper_inner", "inner_corner", "lower_inner", "lower_outer"],
+    "_ear_formula": "EAR = (||p1 - p5|| + ||p2 - p4||) / (2 * ||p0 - p3||)",
+    "left": [33, 160, 158, 133, 153, 144],
+    "right": [362, 385, 387, 263, 373, 380]
+  },
+  "head_pose": {
+    "_order": ["nose_tip", "chin", "left_eye_outer", "right_eye_outer", "left_mouth", "right_mouth"],
+    "_use": "2D anchors for cv2.solvePnP / equivalent PnP solver. Order MUST match face_model_3d.json.points.",
+    "indices": [1, 152, 33, 263, 61, 291]
+  }
+}

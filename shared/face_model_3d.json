@@ -1,0 +1,14 @@
+{
+  "_description": "Canonical adult face 3D model points used as PnP reference. Aligned with landmarks.json head_pose.indices order.",
+  "_units": "mm",
+  "_axes": "X right, Y up, Z forward (toward camera). Nose tip at origin.",
+  "_order": ["nose_tip", "chin", "left_eye_outer", "right_eye_outer", "left_mouth", "right_mouth"],
+  "points": [
+    [0.0, 0.0, 0.0],
+    [0.0, -63.6, -12.5],
+    [-43.3, 32.7, -26.0],
+    [43.3, 32.7, -26.0],
+    [-28.9, -28.9, -24.1],
+    [28.9, -28.9, -24.1]
+  ]
+}
