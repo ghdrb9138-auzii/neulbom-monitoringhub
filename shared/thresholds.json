@@ -6,7 +6,7 @@
     "_note": "EAR below threshold for drowsy_frames consecutive frames -> DROWSY. ~30 FPS -> ~1 sec."
   },
   "head_pose": {
-    "pitch_threshold_deg": 20.0,
+    "pitch_threshold_deg": 12.0,
     "roll_threshold_deg": 25.0,
     "bent_frames": 30,
     "_note": "pitch > pitch_threshold (forward tilt, chin to chest) OR |roll| > roll_threshold (sideways slump) for bent_frames consecutive frames -> HEAD BENT."

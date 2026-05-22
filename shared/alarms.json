@@ -17,7 +17,7 @@
       "repeat_ms": 3000
     },
     "danger": {
-      "message_ko": "위험! 즉시 확인하세요",
+      "message_ko": "아이의 상태를 확인해주세요",
       "level": 3,
       "repeat_ms": 1500
     }

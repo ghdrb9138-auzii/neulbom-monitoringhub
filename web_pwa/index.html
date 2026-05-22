@@ -35,6 +35,14 @@
         width: 100vw;
         height: 100vh;
         height: 100dvh;
+        display: flex;
+        flex-direction: column;
+      }
+      #video-wrap {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
       }
       #video,
       #canvas {
@@ -52,73 +60,360 @@
       #canvas {
         z-index: 1;
       }
-      #start {
+      #intro {
         position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        padding: 16px 32px;
-        font-size: 18px;
-        font-weight: 600;
+        inset: 0;
+        z-index: 4;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        padding: 32px 24px calc(48px + env(safe-area-inset-bottom));
+        text-align: center;
+        word-break: keep-all;
+        background: rgba(0, 0, 0, 0.55);
+      }
+      #intro.hidden {
+        display: none;
+      }
+      #intro h1 {
+        font-size: 30px;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        margin: 0;
+      }
+      #intro .sub {
+        font-size: 13px;
+        font-weight: 500;
+        opacity: 0.55;
+        margin: -6px 0 0;
+        letter-spacing: 0.4px;
+      }
+      #intro .body {
+        font-size: 15px;
+        line-height: 1.6;
+        max-width: 340px;
+        opacity: 0.92;
+        margin: 12px 0 4px;
+      }
+      #intro .body p {
+        margin: 0 0 6px;
+      }
+      #intro .body p.hint {
+        font-size: 12.5px;
+        opacity: 0.55;
+        margin-top: 14px;
+      }
+      #start {
+        margin-top: 12px;
+        padding: 14px 28px;
+        font-size: 17px;
+        font-weight: 700;
         background: #ffffff;
         color: #000;
         border: none;
         border-radius: 12px;
         cursor: pointer;
-        z-index: 2;
         box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
       }
       #start[disabled] {
         opacity: 0.6;
         cursor: default;
       }
-      #start.hidden {
-        display: none;
+      #help {
+        font-size: 11px;
+        opacity: 0.45;
+        max-width: 260px;
+        margin-top: 4px;
       }
-      #mute {
-        position: absolute;
-        top: max(16px, env(safe-area-inset-top));
-        right: 16px;
-        padding: 10px 14px;
+
+      /* ────────────── Bottom panel ────────────── */
+      #panel {
+        flex: 0 0 auto;
+        background: rgba(15, 15, 17, 0.95);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 10px 14px calc(10px + env(safe-area-inset-bottom)) 14px;
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+      }
+      #panel.visible {
+        display: flex;
+      }
+      .panel-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      .panel-row .state {
+        font-size: 18px;
+        font-weight: 700;
+        flex: 1 1 auto;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .panel-row .fps {
+        font-size: 12px;
+        opacity: 0.65;
+      }
+      .signals {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px 14px;
+        font-size: 12px;
+        opacity: 0.85;
+      }
+      .signals span {
+        white-space: nowrap;
+      }
+      .signals strong {
+        opacity: 0.55;
+        font-weight: 500;
+        margin-right: 4px;
+      }
+      .states {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 2px;
+      }
+      .state-chip {
+        font-size: 12px;
+        font-weight: 600;
+        padding: 4px 10px;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 999px;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+      .state-chip.good {
+        background: rgba(80, 200, 120, 0.15);
+        border-color: rgba(80, 200, 120, 0.30);
+        color: #aef0c8;
+      }
+      .state-chip.warn {
+        background: rgba(255, 180, 60, 0.18);
+        border-color: rgba(255, 180, 60, 0.40);
+        color: #ffd996;
+      }
+      .state-chip.bad {
+        background: rgba(255, 90, 90, 0.20);
+        border-color: rgba(255, 90, 90, 0.40);
+        color: #ffb4b4;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      .controls button {
+        flex: 1 1 calc(50% - 4px);
+        min-width: 0;
+        padding: 10px 12px;
         font-size: 14px;
         font-weight: 600;
-        background: rgba(255, 255, 255, 0.92);
-        color: #000;
-        border: none;
-        border-radius: 999px;
-        cursor: pointer;
-        z-index: 3;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-        display: none;
-      }
-      #mute.visible {
-        display: inline-block;
-      }
-      #mute.muted {
-        background: rgba(60, 60, 60, 0.92);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        background: rgba(255, 255, 255, 0.08);
         color: #fff;
+        border-radius: 10px;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
       }
-      #help {
-        position: absolute;
-        bottom: 16px;
-        left: 50%;
-        transform: translateX(-50%);
+      .controls button:active {
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .controls button.muted {
+        background: rgba(255, 90, 90, 0.18);
+        border-color: rgba(255, 90, 90, 0.35);
+      }
+      .controls button.tune-open {
+        background: rgba(120, 180, 255, 0.18);
+        border-color: rgba(120, 180, 255, 0.35);
+      }
+      .controls button.vis-off {
+        background: rgba(60, 60, 60, 0.4);
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .controls button.stop {
+        background: rgba(255, 60, 60, 0.20);
+        border-color: rgba(255, 60, 60, 0.40);
+        color: #ffc8c8;
+      }
+      .controls button.stop:active {
+        background: rgba(255, 60, 60, 0.32);
+      }
+
+      /* ────────────── Tune (slider) panel ────────────── */
+      #tune {
+        display: none;
+        flex-direction: column;
+        gap: 10px;
+        padding-top: 8px;
+        margin-top: 4px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      #tune.visible {
+        display: flex;
+      }
+      .param-row {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .param-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
         font-size: 12px;
-        opacity: 0.6;
-        z-index: 2;
-        text-align: center;
-        max-width: 80%;
+      }
+      .param-header .name {
+        opacity: 0.75;
+      }
+      .param-header .value {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+      }
+      .param-row input[type="range"] {
+        width: 100%;
+        appearance: none;
+        -webkit-appearance: none;
+        height: 24px;
+        background: transparent;
+      }
+      .param-row input[type="range"]::-webkit-slider-runnable-track {
+        height: 4px;
+        background: rgba(255, 255, 255, 0.18);
+        border-radius: 2px;
+      }
+      .param-row input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 22px;
+        height: 22px;
+        margin-top: -9px;
+        background: #fff;
+        border-radius: 50%;
+        cursor: pointer;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+      }
+      .tune-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 2px;
+      }
+      .tune-actions button {
+        padding: 8px 14px;
+        font-size: 12px;
+        font-weight: 600;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        background: rgba(255, 255, 255, 0.06);
+        color: #fff;
+        border-radius: 8px;
+        cursor: pointer;
       }
     </style>
   </head>
   <body>
     <div id="stage">
-      <video id="video" autoplay playsinline muted></video>
-      <canvas id="canvas"></canvas>
-      <button id="start">Start Detection</button>
-      <button id="mute" type="button">🔊 음성 ON</button>
-      <div id="help">HTTPS or localhost required for camera access.</div>
+      <div id="video-wrap">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="canvas"></canvas>
+        <div id="intro">
+          <h1>늘봄</h1>
+          <div class="sub">NEULBOM MONITORING PoC</div>
+          <div class="body">
+            <p>영유아 모니터링 허브의 프로토타입입니다.</p>
+            <p>눈 감음과 머리 꺾임을 감지해<br />음성·시각 알람으로 알려드립니다.</p>
+            <p class="hint">하단 패널에서 파라미터 조정 가능 · 재밌게 테스트해주세요</p>
+          </div>
+          <button id="start">Start</button>
+          <div id="help">카메라 권한 요청 팝업이 뜨면 '허용'해주세요!</div>
+        </div>
+      </div>
+
+      <section id="panel" aria-label="Monitoring panel">
+        <div class="panel-row">
+          <span class="state" id="m-state">—</span>
+          <span class="fps" id="m-fps">— FPS</span>
+        </div>
+
+        <div class="signals">
+          <span><strong>EAR</strong><span id="m-ear">—</span></span>
+          <span><strong>Pitch</strong><span id="m-pitch">—</span></span>
+          <span><strong>Closed</strong><span id="m-closed">—</span></span>
+          <span><strong>Yaw</strong><span id="m-yaw">—</span></span>
+          <span><strong>Roll</strong><span id="m-roll">—</span></span>
+          <span><strong>Bent</strong><span id="m-bent">—</span></span>
+        </div>
+
+        <div class="states">
+          <span class="state-chip" id="m-eye">Eye: —</span>
+          <span class="state-chip" id="m-head">Head: —</span>
+        </div>
+
+        <div class="controls">
+          <button id="btn-mute" type="button">🔊 음성 ON</button>
+          <button id="btn-vis" type="button">📐 시각화 ON</button>
+          <button id="btn-tune" type="button">⚙ 파라미터</button>
+          <button id="btn-stop" type="button" class="stop">⏹ 종료</button>
+        </div>
+
+        <div id="tune">
+          <div class="param-row">
+            <div class="param-header">
+              <span class="name">EAR 임계값 (눈 감음 기준)</span>
+              <span class="value" id="v-ear">—</span>
+            </div>
+            <input type="range" id="s-ear" min="0.10" max="0.40" step="0.01" />
+          </div>
+
+          <div class="param-row">
+            <div class="param-header">
+              <span class="name">Drowsy frames (지속 프레임 → 졸음)</span>
+              <span class="value" id="v-drowsy-frames">—</span>
+            </div>
+            <input type="range" id="s-drowsy-frames" min="5" max="90" step="1" />
+          </div>
+
+          <div class="param-row">
+            <div class="param-header">
+              <span class="name">Pitch 임계값 (앞으로 숙임, °)</span>
+              <span class="value" id="v-pitch">—</span>
+            </div>
+            <input type="range" id="s-pitch" min="5" max="45" step="1" />
+          </div>
+
+          <div class="param-row">
+            <div class="param-header">
+              <span class="name">Roll 임계값 (옆으로 기울임, °)</span>
+              <span class="value" id="v-roll">—</span>
+            </div>
+            <input type="range" id="s-roll" min="5" max="45" step="1" />
+          </div>
+
+          <div class="param-row">
+            <div class="param-header">
+              <span class="name">Bent frames (지속 프레임 → HEAD BENT)</span>
+              <span class="value" id="v-bent-frames">—</span>
+            </div>
+            <input type="range" id="s-bent-frames" min="5" max="90" step="1" />
+          </div>
+
+          <div class="tune-actions">
+            <button id="btn-reset" type="button">기본값 복원</button>
+          </div>
+        </div>
+      </section>
     </div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -1,4 +1,5 @@
 import { LEFT_EYE_IDX, RIGHT_EYE_IDX, type Point2D } from "./ear";
+import type { AxesScreen } from "./headPose";
 import type { AlarmLevel } from "./stateMachine";
 
 const COLOR = {
@@ -7,6 +8,9 @@ const COLOR = {
   orange: "#ff8c00",
   white: "#ffffff",
   panel: "rgba(0, 0, 0, 0.65)",
+  axisX: "#ff3030",
+  axisY: "#00ff00",
+  axisZ: "#3080ff",
 } as const;
 
 function drawEyePolygon(
@@ -40,6 +44,38 @@ export function drawEyes(
 ): void {
   drawEyePolygon(ctx, landmarks, LEFT_EYE_IDX, w, h, isClosed);
   drawEyePolygon(ctx, landmarks, RIGHT_EYE_IDX, w, h, isClosed);
+}
+
+/**
+ * Draw the 3D head coordinate axes (X red right, Y green up, Z blue forward)
+ * anchored at the nose tip, matching the Python PoC's draw_head_axes style.
+ */
+export function drawHeadAxes(
+  ctx: CanvasRenderingContext2D,
+  axes: AxesScreen,
+): void {
+  ctx.lineWidth = 3;
+  ctx.lineCap = "round";
+
+  ctx.strokeStyle = COLOR.axisX;
+  ctx.beginPath();
+  ctx.moveTo(axes.origin.x, axes.origin.y);
+  ctx.lineTo(axes.xEnd.x, axes.xEnd.y);
+  ctx.stroke();
+
+  ctx.strokeStyle = COLOR.axisY;
+  ctx.beginPath();
+  ctx.moveTo(axes.origin.x, axes.origin.y);
+  ctx.lineTo(axes.yEnd.x, axes.yEnd.y);
+  ctx.stroke();
+
+  ctx.strokeStyle = COLOR.axisZ;
+  ctx.beginPath();
+  ctx.moveTo(axes.origin.x, axes.origin.y);
+  ctx.lineTo(axes.zEnd.x, axes.zEnd.y);
+  ctx.stroke();
+
+  ctx.lineCap = "butt";
 }
 
 export interface StatusBar {
@@ -101,7 +137,7 @@ const MASK: Record<Exclude<AlarmLevel, "none">, MaskConfig> = {
     fillRgb: [255, 0, 0],
     baseAlpha: 0.45,
     border: COLOR.red,
-    text: "!! DANGER !!",
+    text: "머리가 꺾인 상태로\n잠에 들었습니다",
     pulseHz: 3.0,
   },
 };
@@ -128,10 +164,23 @@ export function applyAlarmMask(
   ctx.strokeRect(4, 4, w - 8, h - 8);
 
   ctx.fillStyle = `rgba(255, 255, 255, ${(0.7 + 0.3 * pulse).toFixed(3)})`;
-  ctx.font = `bold ${48 + Math.round(12 * pulse)}px -apple-system, system-ui, sans-serif`;
+  const lines = cfg.text.split("\n");
+  // Auto-shrink font when text is too wide for the canvas (Korean multi-line).
+  const maxWidth = w * 0.86;
+  let fontSize = 48 + Math.round(12 * pulse);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(cfg.text, w / 2, h / 2);
+  for (;;) {
+    ctx.font = `bold ${fontSize}px -apple-system, system-ui, sans-serif`;
+    const widest = Math.max(...lines.map((l) => ctx.measureText(l).width));
+    if (widest <= maxWidth || fontSize <= 18) break;
+    fontSize -= 2;
+  }
+  const lineHeight = fontSize * 1.15;
+  const startY = h / 2 - (lineHeight * (lines.length - 1)) / 2;
+  lines.forEach((line, i) => {
+    ctx.fillText(line, w / 2, startY + i * lineHeight);
+  });
   ctx.textAlign = "start";
   ctx.textBaseline = "alphabetic";
 }
