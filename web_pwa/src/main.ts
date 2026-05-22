@@ -8,7 +8,8 @@ import { registerSW } from "virtual:pwa-register";
 import { computeBothEAR, type Point2D } from "./ear";
 import { decomposeEuler } from "./headPose";
 import { applyAlarmMask, drawEyes, drawStatus } from "./overlay";
-import { Detector } from "./stateMachine";
+import { Detector, type AlarmLevel } from "./stateMachine";
+import { getRepeatMs, isMuted, setMuted, speakAlarm, unlock } from "./tts";
 
 registerSW({ immediate: true });
 
@@ -20,6 +21,7 @@ const MODEL_URL =
 const video = document.getElementById("video") as HTMLVideoElement;
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const startBtn = document.getElementById("start") as HTMLButtonElement;
+const muteBtn = document.getElementById("mute") as HTMLButtonElement;
 const help = document.getElementById("help") as HTMLDivElement;
 const ctx = canvas.getContext("2d")!;
 const detector = new Detector();
@@ -28,6 +30,29 @@ let faceLandmarker: FaceLandmarker | null = null;
 let fps = 0;
 let prevTime = performance.now();
 let running = false;
+
+let lastAlarmLevel: AlarmLevel = "none";
+let lastAlarmAt = 0;
+
+function maybeSpeakAlarm(level: AlarmLevel, now: number): void {
+  if (level === "none") {
+    lastAlarmLevel = "none";
+    return;
+  }
+  const isNewLevel = level !== lastAlarmLevel;
+  const elapsed = now - lastAlarmAt;
+  if (isNewLevel || elapsed >= getRepeatMs(level)) {
+    speakAlarm(level);
+    lastAlarmAt = now;
+    lastAlarmLevel = level;
+  }
+}
+
+function renderMuteButton(): void {
+  const muted = isMuted();
+  muteBtn.textContent = muted ? "🔇 음성 OFF" : "🔊 음성 ON";
+  muteBtn.classList.toggle("muted", muted);
+}
 
 async function createLandmarker(): Promise<FaceLandmarker> {
   const fileset = await FilesetResolver.forVisionTasks(WASM_BASE);
@@ -88,8 +113,9 @@ function renderFrame(timestampMs: number): void {
     }
 
     const out = detector.step({ ear, pitch, roll });
+    maybeSpeakAlarm(out.alarm, now);
     drawEyes(ctx, landmarks, canvas.width, canvas.height, out.isClosed);
-    applyAlarmMask(ctx, canvas.width, canvas.height, out.alarm);
+    applyAlarmMask(ctx, canvas.width, canvas.height, out.alarm, now);
     drawStatus(ctx, canvas.width, {
       ear,
       state: out.state,
@@ -102,6 +128,7 @@ function renderFrame(timestampMs: number): void {
     });
   } else {
     const out = detector.noFace();
+    maybeSpeakAlarm(out.alarm, now);
     drawStatus(ctx, canvas.width, {
       ear: 0,
       state: out.state,
@@ -132,6 +159,7 @@ function scheduleNextFrame(): void {
 async function start(): Promise<void> {
   startBtn.disabled = true;
   startBtn.textContent = "Loading…";
+  unlock();
   try {
     const stream = await startCamera();
     video.srcObject = stream;
@@ -145,6 +173,7 @@ async function start(): Promise<void> {
     running = true;
     startBtn.classList.add("hidden");
     help.style.display = "none";
+    muteBtn.classList.add("visible");
     scheduleNextFrame();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -159,6 +188,13 @@ async function start(): Promise<void> {
 startBtn.addEventListener("click", () => {
   void start();
 });
+
+muteBtn.addEventListener("click", () => {
+  setMuted(!isMuted());
+  renderMuteButton();
+});
+
+renderMuteButton();
 
 window.addEventListener("resize", resizeCanvas);
 

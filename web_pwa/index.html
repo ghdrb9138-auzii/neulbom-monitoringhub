@@ -75,6 +75,29 @@
       #start.hidden {
         display: none;
       }
+      #mute {
+        position: absolute;
+        top: max(16px, env(safe-area-inset-top));
+        right: 16px;
+        padding: 10px 14px;
+        font-size: 14px;
+        font-weight: 600;
+        background: rgba(255, 255, 255, 0.92);
+        color: #000;
+        border: none;
+        border-radius: 999px;
+        cursor: pointer;
+        z-index: 3;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        display: none;
+      }
+      #mute.visible {
+        display: inline-block;
+      }
+      #mute.muted {
+        background: rgba(60, 60, 60, 0.92);
+        color: #fff;
+      }
       #help {
         position: absolute;
         bottom: 16px;
@@ -93,6 +116,7 @@
       <video id="video" autoplay playsinline muted></video>
       <canvas id="canvas"></canvas>
       <button id="start">Start Detection</button>
+      <button id="mute" type="button">🔊 음성 ON</button>
       <div id="help">HTTPS or localhost required for camera access.</div>
     </div>
     <script type="module" src="/src/main.ts"></script>

@@ -75,15 +75,35 @@ export function drawStatus(
 }
 
 interface MaskConfig {
-  fill: string;
+  fillRgb: [number, number, number];
+  baseAlpha: number;
   border: string;
   text: string;
+  pulseHz: number;
 }
 
 const MASK: Record<Exclude<AlarmLevel, "none">, MaskConfig> = {
-  drowsy: { fill: "rgba(255, 48, 48, 0.35)", border: COLOR.red, text: "!! DROWSY !!" },
-  head_bent: { fill: "rgba(255, 140, 0, 0.30)", border: COLOR.orange, text: "!! HEAD BENT !!" },
-  danger: { fill: "rgba(255, 0, 0, 0.45)", border: COLOR.red, text: "!! DANGER !!" },
+  drowsy: {
+    fillRgb: [255, 48, 48],
+    baseAlpha: 0.35,
+    border: COLOR.red,
+    text: "!! DROWSY !!",
+    pulseHz: 1.2,
+  },
+  head_bent: {
+    fillRgb: [255, 140, 0],
+    baseAlpha: 0.30,
+    border: COLOR.orange,
+    text: "!! HEAD BENT !!",
+    pulseHz: 1.8,
+  },
+  danger: {
+    fillRgb: [255, 0, 0],
+    baseAlpha: 0.45,
+    border: COLOR.red,
+    text: "!! DANGER !!",
+    pulseHz: 3.0,
+  },
 };
 
 export function applyAlarmMask(
@@ -91,17 +111,24 @@ export function applyAlarmMask(
   w: number,
   h: number,
   alarm: AlarmLevel,
+  timeMs: number,
 ): void {
   if (alarm === "none") return;
   const cfg = MASK[alarm];
-  ctx.fillStyle = cfg.fill;
+
+  // Pulse: 0..1, scaled so alarm never disappears entirely (range 0.55–1.0).
+  const pulse = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin((timeMs / 1000) * cfg.pulseHz * Math.PI * 2));
+  const [r, g, b] = cfg.fillRgb;
+
+  ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${(cfg.baseAlpha * pulse).toFixed(3)})`;
   ctx.fillRect(0, 0, w, h);
+
   ctx.strokeStyle = cfg.border;
-  ctx.lineWidth = 8;
+  ctx.lineWidth = 6 + 6 * pulse;
   ctx.strokeRect(4, 4, w - 8, h - 8);
 
-  ctx.fillStyle = COLOR.white;
-  ctx.font = "bold 56px -apple-system, system-ui, sans-serif";
+  ctx.fillStyle = `rgba(255, 255, 255, ${(0.7 + 0.3 * pulse).toFixed(3)})`;
+  ctx.font = `bold ${48 + Math.round(12 * pulse)}px -apple-system, system-ui, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(cfg.text, w / 2, h / 2);
