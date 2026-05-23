@@ -1,9 +1,9 @@
 {
-  "_description": "Alarm specification per state — single source of truth for Web PoC, Python CLI, and future Jetson Orin/ROS2 nodes. Levels match stateMachine.AlarmLevel.",
+  "_description": "Alarm specification per state — single source of truth for Web PoC, Python CLI, and future Jetson Orin/ROS2 nodes. `alarms` covers Mode A (in-car infant monitoring). `stroller` covers Mode B (outward hazard detection).",
   "_levels": {
     "1": "warning — eyes closed sustained",
-    "2": "warning — head bent sustained",
-    "3": "critical — both sustained (positional asphyxia risk)"
+    "2": "warning — head bent sustained / stroller WARN",
+    "3": "critical — both sustained (positional asphyxia risk) / stroller DANGER"
   },
   "alarms": {
     "drowsy": {
@@ -18,6 +18,18 @@
     },
     "danger": {
       "message_ko": "아이의 상태를 확인해주세요",
+      "level": 3,
+      "repeat_ms": 1500
+    }
+  },
+  "stroller": {
+    "warn": {
+      "message_ko": "사람이 다가오고 있습니다",
+      "level": 2,
+      "repeat_ms": 4000
+    },
+    "danger": {
+      "message_ko": "위험, 사람이 빠르게 접근합니다",
       "level": 3,
       "repeat_ms": 1500
     }

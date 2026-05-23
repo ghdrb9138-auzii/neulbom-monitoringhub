@@ -1,0 +1,22 @@
+{
+  "_description": "External hazard detection thresholds for Mode B (stroller). Shared by stroller_pwa (Web PoC) and future Jetson Orin/ROS2 outward-facing node. Mirrors the role thresholds.json plays for Mode A.",
+  "pose": {
+    "num_poses": 5,
+    "min_pose_detection_confidence": 0.5,
+    "min_pose_presence_confidence": 0.5,
+    "min_tracking_confidence": 0.5,
+    "min_landmark_visibility": 0.5,
+    "bbox_padding_pct": 0.10,
+    "_note": "MediaPipe Pose Landmarker (Lite). For each detected pose we build a tight head+shoulders bbox from landmarks 0-12 (face + shoulders), bypassing the full-body bbox noise from arm/leg/clothing motion. min_landmark_visibility filters unreliable landmarks; bbox_padding_pct expands the tight box outward (10% on each side) so the top of the head/skull is captured even though the highest landmarks are the ears."
+  },
+  "approach": {
+    "area_warn_ratio": 0.015,
+    "area_danger_ratio": 0.05,
+    "growth_warn_pct_per_sec": 30,
+    "growth_danger_pct_per_sec": 80,
+    "history_window_ms": 1000,
+    "warn_frames": 6,
+    "danger_frames": 6,
+    "_note": "area_*_ratio: head+shoulders bbox area / frame area (NOT full body). Roughly 1-2% at ~3m and 4-6% at ~1m, so warn=1.5% / danger=5% gives sensible mid/near distance triggers — retune after camera mount is finalized. growth_*_pct_per_sec: %/s area growth as a single-camera TTC proxy. *_frames: sustained frames to enter state. ~30 FPS so frames=6 ≈ 0.2 s."
+  }
+}
