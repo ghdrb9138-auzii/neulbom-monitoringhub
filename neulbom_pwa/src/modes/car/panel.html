@@ -1,0 +1,78 @@
+<div id="video-wrap">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="canvas"></canvas>
+</div>
+
+<section id="panel" class="panel" aria-label="Monitoring panel">
+  <div class="panel-row">
+    <span class="state" id="m-state">—</span>
+    <span class="fps" id="m-fps">— FPS</span>
+  </div>
+
+  <div class="signals cols-3">
+    <span><strong>EAR</strong><span id="m-ear">—</span></span>
+    <span><strong>Pitch</strong><span id="m-pitch">—</span></span>
+    <span><strong>Closed</strong><span id="m-closed">—</span></span>
+    <span><strong>Yaw</strong><span id="m-yaw">—</span></span>
+    <span><strong>Roll</strong><span id="m-roll">—</span></span>
+    <span><strong>Bent</strong><span id="m-bent">—</span></span>
+  </div>
+
+  <div class="states">
+    <span class="state-chip" id="m-eye">Eye: —</span>
+    <span class="state-chip" id="m-head">Head: —</span>
+  </div>
+
+  <div class="controls">
+    <button id="btn-mute" type="button">🔊 음성 ON</button>
+    <button id="btn-vis" type="button">📐 시각화 ON</button>
+    <button id="btn-tune" type="button">⚙ 파라미터</button>
+    <button id="btn-stop" type="button" class="stop">⏹ 종료</button>
+  </div>
+
+  <div id="tune" class="tune">
+    <div class="param-row">
+      <div class="param-header">
+        <span class="name">EAR 임계값 (눈 감음 기준)</span>
+        <span class="value" id="v-ear">—</span>
+      </div>
+      <input type="range" id="s-ear" min="0.10" max="0.40" step="0.01" />
+    </div>
+
+    <div class="param-row">
+      <div class="param-header">
+        <span class="name">Drowsy frames (지속 프레임 → 졸음)</span>
+        <span class="value" id="v-drowsy-frames">—</span>
+      </div>
+      <input type="range" id="s-drowsy-frames" min="5" max="90" step="1" />
+    </div>
+
+    <div class="param-row">
+      <div class="param-header">
+        <span class="name">Pitch 임계값 (앞으로 숙임, °)</span>
+        <span class="value" id="v-pitch">—</span>
+      </div>
+      <input type="range" id="s-pitch" min="5" max="45" step="1" />
+    </div>
+
+    <div class="param-row">
+      <div class="param-header">
+        <span class="name">Roll 임계값 (옆으로 기울임, °)</span>
+        <span class="value" id="v-roll">—</span>
+      </div>
+      <input type="range" id="s-roll" min="5" max="45" step="1" />
+    </div>
+
+    <div class="param-row">
+      <div class="param-header">
+        <span class="name">Bent frames (지속 프레임 → HEAD BENT)</span>
+        <span class="value" id="v-bent-frames">—</span>
+      </div>
+      <input type="range" id="s-bent-frames" min="5" max="90" step="1" />
+    </div>
+
+    <div class="tune-actions">
+      <button id="btn-reset" type="button">기본값 복원</button>
+    </div>
+  </div>
+</section>

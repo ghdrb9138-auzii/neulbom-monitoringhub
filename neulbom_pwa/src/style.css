@@ -1,0 +1,470 @@
+/* Shared shell + panel styles used by both modes. Mode-specific signal rows are
+   defined inline in each mode's panel.html template. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background: #000;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+#root,
+#stage {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+#stage {
+  display: none;
+}
+#stage.active {
+  display: flex;
+}
+
+/* ────────────── Mode chooser ────────────── */
+
+#chooser {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 32px 24px calc(48px + env(safe-area-inset-bottom));
+  text-align: center;
+  word-break: keep-all;
+  background: #000;
+}
+#chooser.hidden {
+  display: none;
+}
+#chooser h1 {
+  font-size: 30px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin: 0;
+}
+#chooser .sub {
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0.55;
+  margin: -6px 0 0;
+  letter-spacing: 0.4px;
+}
+#chooser .lead {
+  font-size: 14px;
+  line-height: 1.55;
+  opacity: 0.78;
+  max-width: 340px;
+  margin: 6px 0 12px;
+}
+.mode-card {
+  width: 100%;
+  max-width: 360px;
+  padding: 22px 22px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.08s ease, background 0.15s ease;
+}
+.mode-card:active {
+  transform: scale(0.985);
+  background: rgba(255, 255, 255, 0.12);
+}
+.mode-card .icon {
+  font-size: 28px;
+  display: block;
+  margin-bottom: 6px;
+}
+.mode-card .title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 4px;
+}
+.mode-card .desc {
+  font-size: 13px;
+  line-height: 1.55;
+  opacity: 0.75;
+  word-break: keep-all;
+}
+.mode-card .desc strong {
+  color: #fff;
+  font-weight: 700;
+  opacity: 1;
+}
+#chooser .hint {
+  font-size: 12px;
+  line-height: 1.6;
+  opacity: 0.55;
+  margin-top: 12px;
+  max-width: 340px;
+}
+#chooser .hint strong {
+  color: #fff;
+  opacity: 1;
+}
+
+/* ────────────── Error overlay ────────────── */
+
+.error-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 32px 24px calc(48px + env(safe-area-inset-bottom));
+  text-align: center;
+  word-break: keep-all;
+  background: rgba(0, 0, 0, 0.85);
+}
+.error-overlay.hidden {
+  display: none;
+}
+.error-overlay h2 {
+  font-size: 22px;
+  font-weight: 800;
+  color: #ffb4b4;
+  margin: 0;
+}
+.error-overlay .error-msg {
+  font-size: 14px;
+  line-height: 1.55;
+  opacity: 0.85;
+  max-width: 360px;
+}
+
+/* ────────────── Stage (mode active) ────────────── */
+
+#video-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+#video,
+#canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+#video {
+  z-index: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+#canvas {
+  z-index: 1;
+}
+
+/* Per-mode intro overlay (Start button + permission hint) */
+.intro {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 32px 24px calc(48px + env(safe-area-inset-bottom));
+  text-align: center;
+  word-break: keep-all;
+  background: rgba(0, 0, 0, 0.55);
+}
+.intro.hidden {
+  display: none;
+}
+.intro h1 {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin: 0;
+}
+.intro .sub {
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0.55;
+  margin: -6px 0 0;
+  letter-spacing: 0.4px;
+}
+.intro .body {
+  font-size: 15px;
+  line-height: 1.6;
+  max-width: 340px;
+  opacity: 0.92;
+  margin: 12px 0 4px;
+}
+.intro .body p {
+  margin: 0 0 6px;
+}
+.intro .body p.hint {
+  font-size: 12.5px;
+  opacity: 0.55;
+  margin-top: 14px;
+}
+.intro .start-btn {
+  margin-top: 12px;
+  padding: 14px 28px;
+  font-size: 17px;
+  font-weight: 700;
+  background: #ffffff;
+  color: #000;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.intro .start-btn[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+.intro .help {
+  font-size: 11px;
+  opacity: 0.45;
+  max-width: 260px;
+  margin-top: 4px;
+}
+.intro .back {
+  font-size: 12px;
+  opacity: 0.55;
+  background: none;
+  border: none;
+  color: #fff;
+  text-decoration: underline;
+  cursor: pointer;
+  margin-top: 8px;
+}
+
+/* ────────────── Bottom panel ────────────── */
+
+.panel {
+  flex: 0 0 auto;
+  background: rgba(15, 15, 17, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 10px 14px calc(10px + env(safe-area-inset-bottom)) 14px;
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+}
+.panel.visible {
+  display: flex;
+}
+.panel-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.panel-row .state {
+  font-size: 18px;
+  font-weight: 700;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel-row .state.safe {
+  color: #aef0c8;
+}
+.panel-row .state.warn {
+  color: #ffd996;
+}
+.panel-row .state.danger {
+  color: #ffb4b4;
+}
+.panel-row .fps {
+  font-size: 12px;
+  opacity: 0.65;
+}
+.signals {
+  display: grid;
+  gap: 6px 14px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+.signals.cols-2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+.signals.cols-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+.signals span {
+  white-space: nowrap;
+}
+.signals strong {
+  opacity: 0.55;
+  font-weight: 500;
+  margin-right: 4px;
+}
+.states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.state-chip {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.state-chip.good {
+  background: rgba(80, 200, 120, 0.15);
+  border-color: rgba(80, 200, 120, 0.30);
+  color: #aef0c8;
+}
+.state-chip.warn {
+  background: rgba(255, 180, 60, 0.18);
+  border-color: rgba(255, 180, 60, 0.40);
+  color: #ffd996;
+}
+.state-chip.bad {
+  background: rgba(255, 90, 90, 0.20);
+  border-color: rgba(255, 90, 90, 0.40);
+  color: #ffb4b4;
+}
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.controls button {
+  flex: 1 1 calc(50% - 4px);
+  min-width: 0;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-radius: 10px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.controls button:active {
+  background: rgba(255, 255, 255, 0.16);
+}
+.controls button.muted {
+  background: rgba(255, 90, 90, 0.18);
+  border-color: rgba(255, 90, 90, 0.35);
+}
+.controls button.tune-open {
+  background: rgba(120, 180, 255, 0.18);
+  border-color: rgba(120, 180, 255, 0.35);
+}
+.controls button.vis-off {
+  background: rgba(60, 60, 60, 0.4);
+  color: rgba(255, 255, 255, 0.55);
+}
+.controls button.stop {
+  background: rgba(255, 60, 60, 0.20);
+  border-color: rgba(255, 60, 60, 0.40);
+  color: #ffc8c8;
+}
+.controls button.stop:active {
+  background: rgba(255, 60, 60, 0.32);
+}
+
+/* ────────────── Tune (slider) panel ────────────── */
+
+.tune {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+  margin-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.tune.visible {
+  display: flex;
+}
+.param-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.param-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+}
+.param-header .name {
+  opacity: 0.75;
+}
+.param-header .value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.param-row input[type="range"] {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  height: 24px;
+  background: transparent;
+}
+.param-row input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 2px;
+}
+.param-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  margin-top: -9px;
+  background: #fff;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+.tune-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+.tune-actions button {
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+}
