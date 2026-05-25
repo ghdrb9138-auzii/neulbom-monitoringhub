@@ -15,6 +15,7 @@ import {
 } from "./stateMachine";
 import { IouTracker } from "./tracker";
 import { getRepeatMs, isMuted, setMuted, speakAlarm, unlock } from "./tts";
+import { createTorch, type TorchController } from "../../torch";
 
 const CONFIG_STORAGE_KEY = "neulbom.stroller.config.v1";
 const VIS_STORAGE_KEY = "neulbom.stroller.debugVis.v1";
@@ -26,7 +27,7 @@ const LEVEL_LABEL: Record<HazardLevel, string> = {
 };
 
 export async function start(opts: ModeBootOptions): Promise<ModeController> {
-  const { stage, onExit } = opts;
+  const { stage, onExit, onSwitch } = opts;
   stage.innerHTML = panelHtml;
 
   const $ = <T extends HTMLElement>(id: string): T =>
@@ -44,6 +45,7 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
   const muteBtn = $("btn-mute") as HTMLButtonElement;
   const visBtn = $("btn-vis") as HTMLButtonElement;
   const tuneBtn = $("btn-tune") as HTMLButtonElement;
+  const switchBtn = $("btn-switch") as HTMLButtonElement;
   const resetBtn = $("btn-reset") as HTMLButtonElement;
   const stopBtn = $("btn-stop") as HTMLButtonElement;
   const ctx = canvas.getContext("2d")!;
@@ -94,6 +96,7 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
   }
 
   let detector: PoseLandmarker | null = null;
+  let torch: TorchController | null = null;
   let running = false;
   let fps = 0;
   let prevTime = performance.now();
@@ -259,6 +262,9 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
     if (debugVis) drawTracks(ctx, trackHazards);
     applyAlarmMask(ctx, canvas.width, canvas.height, globalLevel, now);
     maybeSpeakAlarm(globalLevel, now);
+    // Hardware torch faces forward (toward the approaching hazard); on devices
+    // without a controllable torch this is a no-op and the mask above is the alarm.
+    torch?.setActive(globalLevel === "danger");
 
     mState.textContent = LEVEL_LABEL[globalLevel];
     mState.classList.toggle("safe", globalLevel === "safe");
@@ -296,6 +302,8 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
   function stopDetection(): void {
     running = false;
     window.speechSynthesis.cancel();
+    torch?.dispose();
+    torch = null;
     const stream = video.srcObject as MediaStream | null;
     stream?.getTracks().forEach((t) => t.stop());
     video.srcObject = null;
@@ -321,6 +329,7 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
     });
     await video.play();
     resizeCanvas();
+    torch = createTorch(stream);
     detector = await createHazardDetector();
     running = true;
     panel.classList.add("visible");
@@ -357,6 +366,11 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
     judge.config = { ...DEFAULT_HAZARD_CONFIG };
     clearStoredConfig();
     renderAllSliders();
+  });
+
+  switchBtn.addEventListener("click", () => {
+    if (stopped) return;
+    onSwitch("car");
   });
 
   stopBtn.addEventListener("click", () => {

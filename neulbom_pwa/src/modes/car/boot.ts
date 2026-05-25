@@ -18,6 +18,7 @@ import {
   type DetectorConfig,
 } from "./stateMachine";
 import { getRepeatMs, isMuted, setMuted, speakAlarm, unlock } from "./tts";
+import { createTorch, type TorchController } from "../../torch";
 
 const WASM_BASE =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm";
@@ -30,7 +31,7 @@ const NOSE_TIP_IDX = 1;
 const AXIS_LEN_PX = 80;
 
 export async function start(opts: ModeBootOptions): Promise<ModeController> {
-  const { stage, onExit } = opts;
+  const { stage, onExit, onSwitch } = opts;
   stage.innerHTML = panelHtml;
 
   const $ = <T extends HTMLElement>(id: string): T =>
@@ -45,6 +46,7 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
   const muteBtn = $("btn-mute") as HTMLButtonElement;
   const visBtn = $("btn-vis") as HTMLButtonElement;
   const tuneBtn = $("btn-tune") as HTMLButtonElement;
+  const switchBtn = $("btn-switch") as HTMLButtonElement;
   const stopBtn = $("btn-stop") as HTMLButtonElement;
   const resetBtn = $("btn-reset") as HTMLButtonElement;
 
@@ -157,6 +159,7 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
   };
 
   let faceLandmarker: FaceLandmarker | null = null;
+  let torch: TorchController | null = null;
   let fps = 0;
   let prevTime = performance.now();
   let running = false;
@@ -324,6 +327,9 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
         }
       }
       applyAlarmMask(ctx, canvas.width, canvas.height, out.alarm, now);
+      // Torch blinks when eyes-closed AND head-bent coincide (alarm === "danger").
+      // Front camera has no torch, so this is a no-op there and the mask is the alarm.
+      torch?.setActive(out.alarm === "danger");
       renderPanel({
         state: out.state,
         fps,
@@ -339,6 +345,7 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
     } else {
       const out = detector.noFace();
       maybeSpeakAlarm(out.alarm, now);
+      torch?.setActive(false);
       renderPanel({
         state: out.state,
         fps,
@@ -373,6 +380,8 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
   function stopDetection(): void {
     running = false;
     window.speechSynthesis.cancel();
+    torch?.dispose();
+    torch = null;
     detector.reset();
     lastAlarmLevel = "none";
     lastAlarmAt = 0;
@@ -398,6 +407,7 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
     });
     await video.play();
     resizeCanvas();
+    torch = createTorch(stream);
     faceLandmarker = await createLandmarker();
     running = true;
     panel.classList.add("visible");
@@ -434,6 +444,11 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
     detector.config = { ...DEFAULT_CONFIG };
     clearStoredConfig();
     renderAllSliders();
+  });
+
+  switchBtn.addEventListener("click", () => {
+    if (stopped) return;
+    onSwitch("stroller");
   });
 
   stopBtn.addEventListener("click", () => {

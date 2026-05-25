@@ -377,6 +377,14 @@ body {
 .controls button:active {
   background: rgba(255, 255, 255, 0.16);
 }
+.controls button.third {
+  flex: 1 1 calc((100% - 16px) / 3);
+  padding: 10px 4px;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: normal;
+  word-break: keep-all;
+}
 .controls button.muted {
   background: rgba(255, 90, 90, 0.18);
   border-color: rgba(255, 90, 90, 0.35);
@@ -388,6 +396,14 @@ body {
 .controls button.vis-off {
   background: rgba(60, 60, 60, 0.4);
   color: rgba(255, 255, 255, 0.55);
+}
+.controls button.switch {
+  background: rgba(120, 180, 255, 0.14);
+  border-color: rgba(120, 180, 255, 0.30);
+  color: #cfe4ff;
+}
+.controls button.switch:active {
+  background: rgba(120, 180, 255, 0.26);
 }
 .controls button.stop {
   background: rgba(255, 60, 60, 0.20);

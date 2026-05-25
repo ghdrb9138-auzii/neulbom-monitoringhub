@@ -3,6 +3,8 @@ import { registerSW } from "virtual:pwa-register";
 
 registerSW({ immediate: true });
 
+export type ModeId = "car" | "stroller";
+
 export interface ModeController {
   stop(): void;
 }
@@ -10,9 +12,8 @@ export interface ModeController {
 export interface ModeBootOptions {
   stage: HTMLElement;
   onExit: () => void;
+  onSwitch: (target: ModeId) => void;
 }
-
-type ModeId = "car" | "stroller";
 
 const chooser = document.getElementById("chooser") as HTMLDivElement;
 const stage = document.getElementById("stage") as HTMLDivElement;
@@ -54,10 +55,17 @@ async function bootMode(id: ModeId): Promise<void> {
     active = await mod.start({
       stage,
       onExit: showChooser,
+      onSwitch: switchMode,
     });
   } catch (e) {
     showError(e);
   }
+}
+
+function switchMode(target: ModeId): void {
+  active?.stop();
+  active = null;
+  void bootMode(target);
 }
 
 carCard.addEventListener("click", () => {
