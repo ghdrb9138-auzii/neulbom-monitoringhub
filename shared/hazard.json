@@ -1,7 +1,7 @@
 {
   "_description": "External hazard detection thresholds for Mode B (stroller). Shared by stroller_pwa (Web PoC) and future Jetson Orin/ROS2 outward-facing node. Mirrors the role thresholds.json plays for Mode A.",
   "pose": {
-    "num_poses": 5,
+    "num_poses": 2,
     "min_pose_detection_confidence": 0.5,
     "min_pose_presence_confidence": 0.5,
     "min_tracking_confidence": 0.5,

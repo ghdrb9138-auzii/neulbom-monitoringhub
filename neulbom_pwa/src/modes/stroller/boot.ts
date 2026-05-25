@@ -26,6 +26,18 @@ const LEVEL_LABEL: Record<HazardLevel, string> = {
   danger: "DANGER",
 };
 
+// Run the (expensive) pose inference once every N rendered frames; the video
+// and alarm mask still redraw every frame so the feed stays smooth. Stroller
+// mode only — the approach metrics are time-based so halving the inference rate
+// does not distort growth %/s. Mode A (car) is unaffected.
+const INFERENCE_EVERY = 2;
+
+// Once DANGER is hit (even for a single frame) the torch keeps blinking for at
+// least this long, so a brief hazard still produces a visible alarm. Each new
+// DANGER frame re-extends the window, so a sustained hazard blinks throughout
+// plus this tail. Torch-only — the on-screen mask still follows the live state.
+const TORCH_HOLD_MS = 3000;
+
 export async function start(opts: ModeBootOptions): Promise<ModeController> {
   const { stage, onExit, onSwitch } = opts;
   stage.innerHTML = panelHtml;
@@ -104,6 +116,14 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
   let lastAlarmAt = 0;
   let debugVis = loadDebugVis();
   let stopped = false;
+  // Frame-throttle state: results from the last inference frame, reused on the
+  // skipped frames so the overlay/panel stay populated between inferences.
+  let frameCount = 0;
+  let lastTrackHazards: TrackHazard[] = [];
+  let lastGlobalLevel: HazardLevel = "safe";
+  let lastTrackCount = 0;
+  // Torch latch: timestamp until which the torch keeps blinking after DANGER.
+  let torchHoldUntil = 0;
   const tracker = new IouTracker();
   const approach = new ApproachAnalyzer();
   const judge = new HazardJudge(loadConfig());
@@ -251,34 +271,43 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
     if (dt > 0) fps = 0.9 * fps + 0.1 * (1 / dt);
     prevTime = now;
 
-    const result = detector.detectForVideo(video, timestampMs);
-    const dets = toHazardDetections(result, canvas.width, canvas.height);
-    const tracks = tracker.update(dets, now);
-    const metricsById = approach.update(tracks, canvas.width, canvas.height, now);
-    const { trackHazards, globalLevel } = judge.step(tracks, metricsById);
+    // Only the inference is throttled; everything below redraws every frame.
+    if (frameCount % INFERENCE_EVERY === 0) {
+      const result = detector.detectForVideo(video, timestampMs);
+      const dets = toHazardDetections(result, canvas.width, canvas.height);
+      const tracks = tracker.update(dets, now);
+      const metricsById = approach.update(tracks, canvas.width, canvas.height, now);
+      const { trackHazards, globalLevel } = judge.step(tracks, metricsById);
+      lastTrackHazards = trackHazards;
+      lastGlobalLevel = globalLevel;
+      lastTrackCount = tracks.length;
+    }
+    frameCount++;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    if (debugVis) drawTracks(ctx, trackHazards);
-    applyAlarmMask(ctx, canvas.width, canvas.height, globalLevel, now);
-    maybeSpeakAlarm(globalLevel, now);
+    if (debugVis) drawTracks(ctx, lastTrackHazards);
+    applyAlarmMask(ctx, canvas.width, canvas.height, lastGlobalLevel, now);
+    maybeSpeakAlarm(lastGlobalLevel, now);
     // Hardware torch faces forward (toward the approaching hazard); on devices
     // without a controllable torch this is a no-op and the mask above is the alarm.
-    torch?.setActive(globalLevel === "danger");
+    // Latch: any DANGER frame extends the blink window to TORCH_HOLD_MS from now.
+    if (lastGlobalLevel === "danger") torchHoldUntil = now + TORCH_HOLD_MS;
+    torch?.setActive(now < torchHoldUntil);
 
-    mState.textContent = LEVEL_LABEL[globalLevel];
-    mState.classList.toggle("safe", globalLevel === "safe");
-    mState.classList.toggle("warn", globalLevel === "warn");
-    mState.classList.toggle("danger", globalLevel === "danger");
+    mState.textContent = LEVEL_LABEL[lastGlobalLevel];
+    mState.classList.toggle("safe", lastGlobalLevel === "safe");
+    mState.classList.toggle("warn", lastGlobalLevel === "warn");
+    mState.classList.toggle("danger", lastGlobalLevel === "danger");
     mFps.textContent = `${fps.toFixed(1)} FPS`;
-    mCount.textContent = `${tracks.length}`;
+    mCount.textContent = `${lastTrackCount}`;
     mArea.textContent =
-      trackHazards.length > 0
-        ? `${(maxAreaRatio(trackHazards) * 100).toFixed(1)}%`
+      lastTrackHazards.length > 0
+        ? `${(maxAreaRatio(lastTrackHazards) * 100).toFixed(1)}%`
         : "—";
-    const g = maxGrowth(trackHazards);
+    const g = maxGrowth(lastTrackHazards);
     mGrowth.textContent =
-      trackHazards.length > 0
+      lastTrackHazards.length > 0
         ? `${g >= 0 ? "+" : ""}${g.toFixed(0)}%/s`
         : "—";
 
@@ -314,6 +343,11 @@ export async function start(opts: ModeBootOptions): Promise<ModeController> {
     judge.reset();
     lastAlarmLevel = "safe";
     lastAlarmAt = 0;
+    frameCount = 0;
+    lastTrackHazards = [];
+    lastGlobalLevel = "safe";
+    lastTrackCount = 0;
+    torchHoldUntil = 0;
     mState.classList.remove("safe", "warn", "danger");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     fps = 0;
