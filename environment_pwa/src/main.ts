@@ -53,7 +53,7 @@ const DEPTH_REMOTE_MODEL_ID = "onnx-community/depth-anything-v2-small";
 const WALKABLE_CLASSES = ["sidewalk"] as const;
 const WALKABLE_CLASS_OPTIONS = ["sidewalk", "road"] as const;
 
-const INPUT_SIZE = 320;
+const INPUT_SIZE = 640;
 const ROAD_SEG_INPUT_W = 160;
 const ROAD_SEG_INPUT_H = 90;
 const ROAD_SEG_INTERVAL_MS = 900;
