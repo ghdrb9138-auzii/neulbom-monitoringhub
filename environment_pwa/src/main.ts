@@ -21,7 +21,7 @@ type PreprocessMeta = {
   sourceHeight: number;
 };
 
-type ModelState = "idle" | "loading" | "ready" | "error";
+type ModelState = "idle" | "loading" | "ready" | "disabled" | "error";
 type SegState = "idle" | "loading" | "ready" | "error";
 type DepthState = "idle" | "loading" | "ready" | "error";
 type RiskState = "safe" | "warn" | "danger";
@@ -46,6 +46,7 @@ type StepCandidate = {
 };
 
 const MODEL_URL = "/models/road_obstacle_yolov8n_320.onnx";
+const MOCK_OVERLAY_BADGE = "mock curb_or_step · sidewalk demo";
 const ROAD_SEG_LOCAL_MODEL_ID = "segformer-cityscapes";
 const ROAD_SEG_REMOTE_MODEL_ID = "Xenova/segformer-b0-finetuned-cityscapes-640-1280";
 const DEPTH_REMOTE_MODEL_ID = "onnx-community/depth-anything-v2-small";
@@ -121,27 +122,27 @@ app.innerHTML = `
       <div class="stage-header">
         <div>
           <div class="eyebrow">ENVIRONMENT PWA</div>
-          <h1>?섎큵 ?좊え李?蹂댄뻾濡?媛먯? PWA</h1>
+          <h1>늘봄 유모차 보행로 감지 PWA</h1>
           <p class="lede">
-            Start 踰꾪듉?쇰줈 移대찓?쇰? ?ㅽ뻾?섍퀬, YOLO bbox? sidewalk traversability overlay, TTS ?뚮┝???④퍡 ?뺤씤?⑸땲??
+            Start 버튼으로 카메라를 시작하고, SegFormer sidewalk segmentation과 mock curb_or_step 감지 결과, TTS 안내를 함께 확인합니다.
           </p>
         </div>
         <div class="status-stack">
-          <span class="pill pill-neutral" id="app-state">?湲?以?/span>
-          <span class="pill pill-neutral" id="cam-state">移대찓??誘몄떎??/span>
-          <span class="pill pill-neutral" id="model-state">YOLO 誘몄떎??/span>
-          <span class="pill pill-neutral" id="seg-state">Seg 誘몄떎??/span>
+          <span class="pill pill-neutral" id="app-state">대기 중</span>
+          <span class="pill pill-neutral" id="cam-state">카메라 미실행</span>
+          <span class="pill pill-neutral" id="model-state">YOLO 미실행</span>
+          <span class="pill pill-neutral" id="seg-state">Seg 미실행</span>
           <span class="pill pill-neutral" id="depth-state">Depth 미실행</span>
           <span class="pill pill-neutral" id="risk-state">safe</span>
           <span class="pill pill-neutral" id="power-state">normal</span>
-          <span class="pill pill-neutral" id="tts-state">TTS 鍮꾪솢??/span>
+          <span class="pill pill-neutral" id="tts-state">TTS 비활성</span>
         </div>
       </div>
 
       <div class="video-frame">
         <video id="video" autoplay muted playsinline webkit-playsinline></video>
         <canvas id="overlay"></canvas>
-        <div class="overlay-badge" id="overlay-badge">mock detection</div>
+        <div class="overlay-badge" id="overlay-badge">mock curb_or_step · sidewalk demo</div>
       </div>
 
       <div id="model-error" class="error-banner hidden" role="status" aria-live="polite"></div>
@@ -151,63 +152,63 @@ app.innerHTML = `
     <section class="controls">
       <button id="start" type="button">Start</button>
       <button id="stop" type="button" class="secondary">Stop</button>
-      <button id="announce" type="button" class="secondary">TTS ?뚯뒪??/button>
+      <button id="announce" type="button" class="secondary">TTS 테스트</button>
     </section>
 
     <section class="info-grid">
       <article class="card">
-        <div class="card-label">移대찓??/div>
-        <div class="card-value" id="camera-label">?湲?/div>
-        <div class="card-note">沅뚯옣 ?댁긽??960x540, frameRate 理쒕? 30</div>
+        <div class="card-label">카메라</div>
+        <div class="card-value" id="camera-label">대기</div>
+        <div class="card-note">권장 해상도 960x540, 최대 frameRate 30</div>
       </article>
 
       <article class="card">
-        <div class="card-label">Sidewalk model</div>
-        <div class="card-value" id="model-label">?湲?/div>
+        <div class="card-label">YOLO 모델</div>
+        <div class="card-value" id="model-label">대기</div>
         <div class="card-note" id="model-note">/public/models/road_obstacle_yolov8n_320.onnx</div>
       </article>
 
       <article class="card">
         <div class="card-label">SegFormer</div>
-        <div class="card-value" id="seg-label">?湲?/div>
+        <div class="card-value" id="seg-label">대기</div>
         <div class="card-note" id="seg-note">sidewalk segmentation overlay</div>
       </article>
 
       <article class="card">
         <div class="card-label">Depth</div>
-        <div class="card-value" id="depth-label">?湲?/div>
+        <div class="card-value" id="depth-label">대기</div>
         <div class="card-note" id="depth-note">depth-anything placeholder + optional model skeleton</div>
       </article>
 
       <article class="card">
         <div class="card-label">Risk</div>
         <div class="card-value" id="risk-label">safe</div>
-        <div class="card-note" id="risk-note">蹂댄뻾 媛???곸뿭 + ???⑥감 ?섏떖 ?곸뿭 湲곗?</div>
+        <div class="card-note" id="risk-note">보행 가속 영역 + 유모차 감속 영역 기준</div>
       </article>
 
       <article class="card">
         <div class="card-label">Performance</div>
         <div class="card-value" id="fps-label">FPS --</div>
-        <div class="card-note" id="power-note">?뺤긽 紐⑤뱶</div>
+        <div class="card-note" id="power-note">정상 모드</div>
       </article>
 
       <article class="card">
         <div class="card-label">Detection</div>
         <div class="card-value" id="detection-label">curb_or_step 0.82</div>
-        <div class="card-note">YOLO??2?꾨젅??1?? ??꾨젰 紐⑤뱶?먯꽌??3?꾨젅??1??異붾줎</div>
+        <div class="card-note">mock curb_or_step는 2초 1회, 감지 상승 시 3초 1회로 유지</div>
       </article>
 
       <article class="card">
         <div class="card-label">TTS</div>
-        <div class="card-value" id="tts-label">以鍮??꾩슂</div>
-        <div class="card-note">warn / danger ?곹깭蹂?cooldown ?곸슜</div>
+        <div class="card-value" id="tts-label">준비 필요</div>
+        <div class="card-note">warn / danger 상태별 cooldown 적용</div>
       </article>
     </section>
 
     <section class="details">
-      <div><span>?⑦궎吏紐?/span><code>neulbom-environment-pwa</code></div>
-      <div><span>媛쒕컻 ?ы듃</span><code>5176</code></div>
-      <div><span>?곹깭</span><code>移대찓??+ Canvas + TTS + YOLO + SegFormer(sidewalk)</code></div>
+      <div><span>패키지명</span><code>neulbom-environment-pwa</code></div>
+      <div><span>개발 포트</span><code>5176</code></div>
+      <div><span>구성</span><code>Camera + Canvas + TTS + mock curb_or_step + SegFormer(sidewalk)</code></div>
     </section>
   </main>
 `;
@@ -287,6 +288,8 @@ let modelState: ModelState = "idle";
 let modelErrorMessage = "";
 let modelSession: ort.InferenceSession | null = null;
 let modelLoadPromise: Promise<void> | null = null;
+let modelAvailability: boolean | null = null;
+let modelCheckPromise: Promise<boolean> | null = null;
 
 let roadSegState: SegState = "idle";
 let roadSegErrorMessage = "";
@@ -357,7 +360,15 @@ function updateModelUi(): void {
   if (modelState === "idle") {
     setPillText(modelStateEl, "YOLO 미실행", "neutral");
     modelLabel.textContent = "대기";
-    modelNote.textContent = "모델 로딩 전";
+    modelNote.textContent = "시작 시 모델 존재 여부를 확인합니다";
+    hideModelError();
+    return;
+  }
+
+  if (modelState === "disabled") {
+    setPillText(modelStateEl, "YOLO 비활성 / mock mode", "neutral");
+    modelLabel.textContent = "mock mode";
+    modelNote.textContent = "모델 파일이 없어 mock curb_or_step를 사용합니다";
     hideModelError();
     return;
   }
@@ -373,15 +384,15 @@ function updateModelUi(): void {
   if (modelState === "ready") {
     setPillText(modelStateEl, "YOLO 준비 완료", "success");
     modelLabel.textContent = "준비 완료";
-    modelNote.textContent = "YOLOv8 Nano ONNX 추론 가능";
+    modelNote.textContent = "YOLOv8 Nano ONNX 추론 사용 중";
     hideModelError();
     return;
   }
 
   setPillText(modelStateEl, "YOLO 오류", "bad");
   modelLabel.textContent = "오류";
-  modelNote.textContent = modelErrorMessage || "YOLO 濡쒕뵫 ?먮뒗 異붾줎 ?ㅽ뙣";
-  showModelError(modelErrorMessage || "YOLO 濡쒕뵫 ?ㅽ뙣");
+  modelNote.textContent = modelErrorMessage || "YOLO 모델 로딩 또는 추론 실패";
+  showModelError(modelErrorMessage || "YOLO 모델 로딩 실패");
 }
 
 function updateSegUi(): void {
@@ -483,7 +494,9 @@ function updateCommonUi(): void {
       : `${currentRiskState}`;
   }
 
-  if (lastStepCandidate) {
+  if (modelState === "disabled" || !modelSession) {
+    overlayBadge.textContent = MOCK_OVERLAY_BADGE;
+  } else if (lastStepCandidate) {
     overlayBadge.textContent = `step_candidate ${lastStepCandidate.score.toFixed(2)} · ${currentRiskState}`;
   } else {
     overlayBadge.textContent = primary
@@ -749,7 +762,7 @@ function primeTts(): void {
 
 async function openCamera(): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getUserMedia) {
-    throw new Error("釉뚮씪?곗?媛 移대찓?쇰? 吏?먰븯吏 ?딆뒿?덈떎.");
+    throw new Error("브라우저가 카메라를 지원하지 않습니다.");
   }
 
   const commonVideo = {
@@ -1387,16 +1400,25 @@ function updateRoadSegMask(segments: any[]): void {
 }
 
 async function ensureModelLoad(): Promise<void> {
-  if (modelLoadPromise || modelState === "ready") {
+  if (modelLoadPromise || modelState === "ready" || modelState === "disabled") {
     return modelLoadPromise ?? Promise.resolve();
   }
 
-  modelState = "loading";
-  modelErrorMessage = "";
-  updateModelUi();
-
   modelLoadPromise = (async () => {
     try {
+      const available = await ensureModelAvailable();
+      if (!available) {
+        modelSession = null;
+        modelState = "disabled";
+        modelErrorMessage = "";
+        updateModelUi();
+        return;
+      }
+
+      modelState = "loading";
+      modelErrorMessage = "";
+      updateModelUi();
+
       modelSession = await ort.InferenceSession.create(MODEL_URL, {
         executionProviders: ["wasm"],
       });
@@ -1407,7 +1429,7 @@ async function ensureModelLoad(): Promise<void> {
       modelSession = null;
       modelState = "error";
       modelErrorMessage =
-        error instanceof Error ? `YOLO 紐⑤뜽 濡쒕뵫 ?ㅽ뙣: ${error.message}` : `YOLO 紐⑤뜽 濡쒕뵫 ?ㅽ뙣: ${String(error)}`;
+        error instanceof Error ? `YOLO 모델 로딩 실패: ${error.message}` : `YOLO 모델 로딩 실패: ${String(error)}`;
       updateModelUi();
       console.error("model load failed", error);
     } finally {
@@ -1416,6 +1438,35 @@ async function ensureModelLoad(): Promise<void> {
   })();
 
   return modelLoadPromise;
+}
+
+async function ensureModelAvailable(): Promise<boolean> {
+  if (modelAvailability !== null) {
+    return modelAvailability;
+  }
+
+  if (modelCheckPromise) {
+    return modelCheckPromise;
+  }
+
+  modelCheckPromise = (async () => {
+    try {
+      const response = await fetch(MODEL_URL, {
+        method: "HEAD",
+        cache: "no-store",
+      });
+      modelAvailability = response.ok;
+      return modelAvailability;
+    } catch (error) {
+      console.warn("model existence check failed, switching to mock mode", error);
+      modelAvailability = false;
+      return false;
+    } finally {
+      modelCheckPromise = null;
+    }
+  })();
+
+  return modelCheckPromise;
 }
 
 async function ensureRoadSegLoad(): Promise<void> {
@@ -1453,8 +1504,8 @@ async function ensureRoadSegLoad(): Promise<void> {
       roadSegState = "error";
       roadSegErrorMessage =
         error instanceof Error
-          ? `SegFormer 濡쒕뵫 ?ㅽ뙣: ${error.message}`
-          : `SegFormer 濡쒕뵫 ?ㅽ뙣: ${String(error)}`;
+          ? `SegFormer 로딩 실패: ${error.message}`
+          : `SegFormer 로딩 실패: ${String(error)}`;
       updateSegUi();
       console.error("road segmentation load failed", error);
     } finally {
@@ -1522,7 +1573,7 @@ async function runInference(): Promise<void> {
   } catch (error) {
     modelState = "error";
     modelErrorMessage =
-      error instanceof Error ? `YOLO 異붾줎 ?ㅽ뙣: ${error.message}` : `YOLO 異붾줎 ?ㅽ뙣: ${String(error)}`;
+      error instanceof Error ? `YOLO 추론 실패: ${error.message}` : `YOLO 추론 실패: ${String(error)}`;
     updateModelUi();
     console.error("inference failed", error);
   } finally {
@@ -1560,7 +1611,7 @@ async function runRoadSegmentation(): Promise<void> {
   } catch (error) {
     roadSegState = "error";
     roadSegErrorMessage =
-      error instanceof Error ? `SegFormer 異붾줎 ?ㅽ뙣: ${error.message}` : `SegFormer 異붾줎 ?ㅽ뙣: ${String(error)}`;
+      error instanceof Error ? `SegFormer 추론 실패: ${error.message}` : `SegFormer 추론 실패: ${String(error)}`;
     updateSegUi();
     console.error("road segmentation inference failed", error);
   } finally {
@@ -1744,7 +1795,7 @@ function stop(): void {
   lastDepthAt = 0;
   lastRoadMask = null;
   lastRoadMaskCanvas = null;
-  overlayBadge.textContent = "mock detection";
+  overlayBadge.textContent = MOCK_OVERLAY_BADGE;
   lastDetections = [...MOCK_DETECTIONS];
 
   setStoppedState();
