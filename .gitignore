@@ -46,3 +46,7 @@ recordings/
 *.key
 *.pem
 secrets/
+
+# Local ML model binaries
+*/public/models/**/*.onnx
+hf_models/

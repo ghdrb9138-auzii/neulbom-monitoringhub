@@ -1,10 +1,10 @@
-import "./style.css";
+﻿import "./style.css";
 import { registerSW } from "virtual:pwa-register";
 import { env, pipeline, RawImage } from "@huggingface/transformers";
 
 type SegState = "idle" | "loading" | "ready" | "error";
-type RiskState = "unknown" | "safe" | "warn" | "danger";
-type MaskKind = "road" | "sidewalk";
+type RiskState = "unknown" | "safe" | "crosswalk" | "warn" | "danger";
+type MaskKind = "road" | "sidewalk" | "crosswalk" | "curb";
 
 type SemanticMask = {
   width: number;
@@ -28,32 +28,86 @@ type RawMaskLike = {
   data?: ArrayLike<number>;
 };
 
+type MaskInspection = {
+  width: number;
+  height: number;
+  type: string;
+  foregroundValues: number[];
+  uniqueValues: number[];
+  binaryData: Uint8Array;
+};
+
 type RawSegmentLike = {
   label?: string;
+  score?: number;
   mask?: unknown;
 };
 
-const ROAD_SEG_LOCAL_MODEL_DIR = "/models/segformer-cityscapes";
-const ROAD_SEG_CONFIG_URL = "/models/segformer-cityscapes/config.json";
-const ROAD_SEG_PREPROCESSOR_URL = "/models/segformer-cityscapes/preprocessor_config.json";
-const ROAD_SEG_ONNX_URL = "/models/segformer-cityscapes/onnx/model_quantized.onnx";
-const ROAD_SEG_INPUT_W = 160;
-const ROAD_SEG_INPUT_H = 90;
+const ROAD_SEG_LOCAL_MODEL_DIR = "/models/segformer-sidewalk";
+const ROAD_SEG_CONFIG_URL = "/models/segformer-sidewalk/config.json";
+const ROAD_SEG_PREPROCESSOR_URL = "/models/segformer-sidewalk/preprocessor_config.json";
+const ROAD_SEG_ONNX_URL = "/models/segformer-sidewalk/onnx/model.onnx";
+const ROAD_SEG_INPUT_W = 512;
+const ROAD_SEG_INPUT_H = 512;
 const ROAD_SEG_INTERVAL_MS = 900;
 const ROAD_SEG_SLOW_INTERVAL_MS = 1500;
+const ROAD_DANGER_LABELS = new Set([
+  "flat-road",
+  "flat-cyclinglane",
+  "flat-parkingdriveway",
+]);
 
-const NEAR_ZONE: Zone = { xMin: 0.35, xMax: 0.65, yMin: 0.75, yMax: 1.0 };
-const LOOKAHEAD_ZONE: Zone = { xMin: 0.32, xMax: 0.68, yMin: 0.52, yMax: 0.78 };
-const FAR_ZONE: Zone = { xMin: 0.30, xMax: 0.70, yMin: 0.35, yMax: 0.55 };
+const SIDEWALK_LABELS = new Set([
+  "flat-sidewalk",
+]);
+
+const CROSSWALK_LABELS = new Set([
+  "flat-crosswalk",
+]);
+
+const CURB_LABELS = new Set([
+  "flat-curb",
+]);
+
+const NEAR_ZONE: Zone = {
+  xMin: 0.25,
+  xMax: 0.75,
+  yMin: 0.72,
+  yMax: 1.0,
+};
+
+const LOOKAHEAD_ZONE: Zone = {
+  xMin: 0.22,
+  xMax: 0.78,
+  yMin: 0.48,
+  yMax: 0.76,
+};
+
+const FAR_ZONE: Zone = {
+  xMin: 0.25,
+  xMax: 0.75,
+  yMin: 0.28,
+  yMax: 0.50,
+};
 
 const WARN_TTS_INTERVAL_MS = 4000;
 const DANGER_TTS_INTERVAL_MS = 1500;
+const CROSSWALK_TTS_INTERVAL_MS = 5000;
 const DANGER_HOLD_MS = 1500;
 const WARN_HOLD_MS = 900;
 const LOW_POWER_ENTER_FPS = 12;
 const LOW_POWER_EXIT_FPS = 16;
 const NORMAL_INFER_EVERY_N_FRAMES = 2;
 const LOW_POWER_INFER_EVERY_N_FRAMES = 3;
+const COVERAGE_EMA_ALPHA = 0.35;
+const ON_SIDEWALK_MIN = 0.35;
+const NEAR_ROAD_DANGER = 0.45;
+const LOOKAHEAD_ROAD_WARN = 0.28;
+const LOOKAHEAD_ROAD_DANGER = 0.50;
+const LOOKAHEAD_CURB_WARN = 0.06;
+const NEAR_CURB_WARN = 0.10;
+const NEAR_CROSSWALK_MIN = 0.22;
+const LOOKAHEAD_CROSSWALK_MIN = 0.20;
 
 const originalFetch = globalThis.fetch.bind(globalThis);
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -106,6 +160,7 @@ app.innerHTML = `
 
       <div class="video-frame">
         <video id="video" autoplay muted playsinline webkit-playsinline></video>
+        <canvas id="image-test-canvas" class="hidden"></canvas>
         <canvas id="overlay"></canvas>
         <div class="overlay-badge" id="overlay-badge">지면 인식 불안정</div>
       </div>
@@ -114,6 +169,9 @@ app.innerHTML = `
     </section>
 
     <section class="controls">
+      <input id="image-test-input" type="file" accept="image/*" />
+      <button id="image-test-run" type="button" class="secondary">이미지 분석</button>
+      <button id="camera-mode" type="button" class="secondary">카메라 모드</button>
       <button id="start" type="button">Start</button>
       <button id="stop" type="button" class="secondary">Stop</button>
       <button id="announce" type="button" class="secondary">TTS 테스트</button>
@@ -154,6 +212,11 @@ app.innerHTML = `
 `;
 
 const video = document.getElementById("video") as HTMLVideoElement;
+const imageTestInput = document.querySelector<HTMLInputElement>("#image-test-input");
+const imageTestRun = document.querySelector<HTMLButtonElement>("#image-test-run");
+const cameraModeButton = document.querySelector<HTMLButtonElement>("#camera-mode");
+const imageTestCanvas = document.querySelector<HTMLCanvasElement>("#image-test-canvas");
+const imageTestCtx = imageTestCanvas?.getContext("2d") ?? null;
 const overlay = document.getElementById("overlay") as HTMLCanvasElement;
 const overlayBadge = document.getElementById("overlay-badge") as HTMLDivElement;
 const startButton = document.getElementById("start") as HTMLButtonElement;
@@ -182,6 +245,14 @@ const roadSegInputCanvas = document.createElement("canvas");
 roadSegInputCanvas.width = ROAD_SEG_INPUT_W;
 roadSegInputCanvas.height = ROAD_SEG_INPUT_H;
 const roadSegInputCtx = roadSegInputCanvas.getContext("2d", { willReadFrequently: true });
+
+if (!imageTestInput || !imageTestRun || !cameraModeButton || !imageTestCanvas || !imageTestCtx) {
+  throw new Error("이미지 테스트 컨트롤을 찾을 수 없습니다.");
+}
+
+const imageTestInputEl: HTMLInputElement = imageTestInput;
+const cameraModeButtonEl: HTMLButtonElement = cameraModeButton;
+const imageTestCanvasEl: HTMLCanvasElement = imageTestCanvas;
 
 async function clearDevServiceWorkersAndCaches(): Promise<void> {
   if (!import.meta.env.DEV) return;
@@ -236,22 +307,36 @@ let roadSegErrorMessage = "";
 let roadSegBusy = false;
 let roadSegLoadPromise: Promise<void> | null = null;
 let segmenter: RoadSegmenter | null = null;
+let imageTestMode = false;
+let imageTestBitmap: ImageBitmap | null = null;
 
 let roadMask: SemanticMask | null = null;
 let sidewalkMask: SemanticMask | null = null;
+let crosswalkMask: SemanticMask | null = null;
+let curbMask: SemanticMask | null = null;
 let roadMaskCanvas: HTMLCanvasElement | null = null;
 let sidewalkMaskCanvas: HTMLCanvasElement | null = null;
+let crosswalkMaskCanvas: HTMLCanvasElement | null = null;
+let curbMaskCanvas: HTMLCanvasElement | null = null;
+let detectedLabels: string[] = [];
 
 let nearSidewalkCoverage = 0;
 let nearRoadCoverage = 0;
+let nearCrosswalkCoverage = 0;
 let lookaheadSidewalkCoverage = 0;
 let lookaheadRoadCoverage = 0;
+let lookaheadCrosswalkCoverage = 0;
+let nearCurbCoverage = 0;
+let lookaheadCurbCoverage = 0;
 let farRoadCoverage = 0;
 let nearSidewalkCoverageKnown = false;
 let nearRoadCoverageKnown = false;
+let nearCrosswalkCoverageKnown = false;
 let lookaheadSidewalkCoverageKnown = false;
 let lookaheadRoadCoverageKnown = false;
-let farRoadCoverageKnown = false;
+let lookaheadCrosswalkCoverageKnown = false;
+let nearCurbCoverageKnown = false;
+let lookaheadCurbCoverageKnown = false;
 
 let rawRiskState: RiskState = "unknown";
 let currentRiskState: RiskState = "unknown";
@@ -259,6 +344,7 @@ let lastRawRiskState: RiskState = "unknown";
 let rawRiskStreak = 0;
 let riskHoldUntil = 0;
 let lastWarnTtsAt = 0;
+let lastCrosswalkTtsAt = 0;
 let lastDangerTtsAt = 0;
 let lastSegAt = 0;
 
@@ -292,7 +378,8 @@ function hideSegError(): void {
 
 function getRiskBadgeText(state: RiskState): string {
   if (state === "safe") return "인도 보행 중";
-  if (state === "warn") return "전방 도로 접근 주의";
+  if (state === "crosswalk") return "횡단보도 보행 구간";
+  if (state === "warn") return "도로 경계 접근 주의";
   if (state === "danger") return "도로 진입 위험";
   return "지면 인식 불안정";
 }
@@ -301,11 +388,126 @@ function getCoverageText(value: number | null): string {
   return value === null ? "unknown" : `${(value * 100).toFixed(1)}%`;
 }
 
+function smoothCoverage(prev: number, next: number): number {
+  return prev * (1 - COVERAGE_EMA_ALPHA) + next * COVERAGE_EMA_ALPHA;
+}
+
+function inspectMask(mask: unknown): MaskInspection | null {
+  if (!mask) return null;
+
+  if (typeof ImageData !== "undefined" && mask instanceof ImageData) {
+    const binaryData = new Uint8Array(mask.width * mask.height);
+    const foregroundValues: number[] = [];
+
+    for (let i = 0; i < binaryData.length; i += 1) {
+      const alpha = mask.data[i * 4 + 3] ?? 0;
+      binaryData[i] = alpha > 0 ? 1 : 0;
+      if (foregroundValues.length < 12) foregroundValues.push(alpha);
+    }
+
+    return {
+      width: mask.width,
+      height: mask.height,
+      type: "ImageData(RGBA)",
+      foregroundValues,
+      uniqueValues: Array.from(new Set(Array.from(mask.data))).slice(0, 24),
+      binaryData,
+    };
+  }
+
+  if (typeof HTMLCanvasElement !== "undefined" && mask instanceof HTMLCanvasElement) {
+    const ctx = mask.getContext("2d");
+    if (!ctx) return null;
+    const imageData = ctx.getImageData(0, 0, mask.width, mask.height);
+    return inspectMask(imageData);
+  }
+
+  if (typeof HTMLImageElement !== "undefined" && mask instanceof HTMLImageElement) {
+    const canvas = document.createElement("canvas");
+    canvas.width = mask.naturalWidth || mask.width;
+    canvas.height = mask.naturalHeight || mask.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(mask, 0, 0);
+    return inspectMask(ctx.getImageData(0, 0, canvas.width, canvas.height));
+  }
+
+  if (typeof OffscreenCanvas !== "undefined" && mask instanceof OffscreenCanvas) {
+    const ctx = mask.getContext("2d");
+    if (!ctx) return null;
+    return inspectMask(ctx.getImageData(0, 0, mask.width, mask.height));
+  }
+
+  if (typeof ImageBitmap !== "undefined" && mask instanceof ImageBitmap) {
+    const canvas = document.createElement("canvas");
+    canvas.width = mask.width;
+    canvas.height = mask.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(mask, 0, 0);
+    return inspectMask(ctx.getImageData(0, 0, canvas.width, canvas.height));
+  }
+
+  const raw = mask as RawMaskLike;
+  const width = Number(raw.width ?? raw.size?.[0] ?? 0);
+  const height = Number(raw.height ?? raw.size?.[1] ?? 0);
+  const sourceData = raw.data;
+  if (!width || !height || !sourceData) return null;
+
+  const pixelCount = width * height;
+  const channels = Math.max(
+    1,
+    Number(
+      raw.channels ??
+        raw.numChannels ??
+        (pixelCount > 0 && sourceData.length % pixelCount === 0
+          ? Math.max(1, Math.floor(sourceData.length / pixelCount))
+          : 1),
+    ),
+  );
+  const useAlpha = channels === 4 || sourceData.length === pixelCount * 4;
+  const foregroundIndex = useAlpha ? 3 : 0;
+  const binaryData = new Uint8Array(pixelCount);
+  const foregroundValues: number[] = [];
+  const uniqueValueSet = new Set<number>();
+
+  for (let i = 0; i < pixelCount; i += 1) {
+    const value = Number(sourceData[i * channels + foregroundIndex] ?? 0);
+    binaryData[i] = value > 0 ? 1 : 0;
+    if (foregroundValues.length < 12) foregroundValues.push(value);
+    uniqueValueSet.add(value);
+  }
+
+  return {
+    width,
+    height,
+    type: useAlpha ? `ArrayLike(RGBA, channels=${channels})` : `ArrayLike(single-channel, channels=${channels})`,
+    foregroundValues,
+    uniqueValues: Array.from(uniqueValueSet).slice(0, 24),
+    binaryData,
+  };
+}
+
+function logSegmentMaskDetails(segments: RawSegmentLike[]): void {
+  for (const segment of segments) {
+    const inspection = inspectMask(segment?.mask);
+    console.log("[segformer] segment", {
+      label: String(segment?.label ?? "").toLowerCase(),
+      score: segment?.score,
+      maskWidth: inspection?.width ?? null,
+      maskHeight: inspection?.height ?? null,
+      maskType: inspection?.type ?? null,
+      maskDataSample: inspection?.foregroundValues ?? null,
+      maskUniqueValues: inspection?.uniqueValues ?? null,
+    });
+  }
+}
+
 function updateSegUi(): void {
   if (roadSegState === "idle") {
     setPillText(segStateEl, "지면 분석 대기", "neutral");
     segLabel.textContent = "대기";
-    segNote.textContent = "Camera + SegFormer road/sidewalk segmentation + Risk Warning + TTS";
+    segNote.textContent = "카메라 + SegFormer 도로/인도 분할 + 위험 경고 + TTS";
     hideSegError();
     return;
   }
@@ -313,7 +515,7 @@ function updateSegUi(): void {
   if (roadSegState === "loading") {
     setPillText(segStateEl, "지면 분석 중", "warn");
     segLabel.textContent = "분석 중";
-    segNote.textContent = "Local SegFormer 확인 중";
+    segNote.textContent = "로컬 SegFormer 확인 중";
     hideSegError();
     return;
   }
@@ -321,32 +523,49 @@ function updateSegUi(): void {
   if (roadSegState === "ready") {
     setPillText(segStateEl, "지면 분석 완료", "success");
     segLabel.textContent = "Seg 준비 완료";
-    segNote.textContent = "Local SegFormer 사용 중: /models/segformer-cityscapes";
+    segNote.textContent = "로컬 SegFormer 사용 중 /models/segformer-sidewalk";
     hideSegError();
     return;
   }
 
   setPillText(segStateEl, "지면 분석 오류", "bad");
   segLabel.textContent = "Seg 오류";
-  segNote.textContent = "인도 / 도로 분석 실패";
-  showSegError(roadSegErrorMessage || "지면 분석에 실패했습니다.");
+  segNote.textContent = "SegFormer 로딩 실패";
+  showSegError(roadSegErrorMessage || "SegFormer 로딩 실패.");
 }
 
 function updateRiskUi(): void {
   const riskText = getRiskBadgeText(currentRiskState);
+  const labelsText = detectedLabels.length > 0 ? detectedLabels.join(", ") : "none";
+  const nearSidewalkText = `${getCoverageText(nearSidewalkCoverageKnown ? nearSidewalkCoverage : null)}`;
+  const nearRoadText = `${getCoverageText(nearRoadCoverageKnown ? nearRoadCoverage : null)}`;
+  const nearCrosswalkText = `${getCoverageText(nearCrosswalkCoverageKnown ? nearCrosswalkCoverage : null)}`;
+  const lookaheadSidewalkText = `${getCoverageText(lookaheadSidewalkCoverageKnown ? lookaheadSidewalkCoverage : null)}`;
+  const lookaheadRoadText = `${getCoverageText(lookaheadRoadCoverageKnown ? lookaheadRoadCoverage : null)}`;
+  const lookaheadCrosswalkText = `${getCoverageText(lookaheadCrosswalkCoverageKnown ? lookaheadCrosswalkCoverage : null)}`;
+  const nearCurbText = `${getCoverageText(nearCurbCoverageKnown ? nearCurbCoverage : null)}`;
+  const lookaheadCurbText = `${getCoverageText(lookaheadCurbCoverageKnown ? lookaheadCurbCoverage : null)}`;
+
   riskStateEl.dataset.rawState = rawRiskState;
   riskLabel.textContent = riskText;
   riskNote.textContent = [
-    `near sidewalk ${getCoverageText(nearSidewalkCoverageKnown ? nearSidewalkCoverage : null)}`,
-    `near road ${getCoverageText(nearRoadCoverageKnown ? nearRoadCoverage : null)}`,
-    `lookahead road ${getCoverageText(lookaheadRoadCoverageKnown ? lookaheadRoadCoverage : null)}`,
-    `far road ${getCoverageText(farRoadCoverageKnown ? farRoadCoverage : null)}`,
+    `detected labels=${labelsText}`,
+    `near sidewalk ${nearSidewalkText}`,
+    `near road ${nearRoadText}`,
+    `near crosswalk ${nearCrosswalkText}`,
+    `lookahead sidewalk ${lookaheadSidewalkText}`,
+    `lookahead road ${lookaheadRoadText}`,
+    `lookahead crosswalk ${lookaheadCrosswalkText}`,
+    `near curb ${nearCurbText}`,
+    `lookahead curb ${lookaheadCurbText}`,
+    `raw risk=${rawRiskState}`,
+    `current risk=${currentRiskState}`,
   ].join(" · ");
 
   setPillText(
     riskStateEl,
     riskText,
-    currentRiskState === "safe" || currentRiskState === "unknown"
+    currentRiskState === "safe" || currentRiskState === "crosswalk" || currentRiskState === "unknown"
       ? "neutral"
       : currentRiskState === "warn"
         ? "warn"
@@ -355,8 +574,8 @@ function updateRiskUi(): void {
 }
 
 function updatePowerUi(): void {
-  setPillText(powerStateEl, lowPowerMode ? "low power" : "normal", lowPowerMode ? "warn" : "success");
-  powerNote.textContent = lowPowerMode ? "FPS 12 이하, 3프레임마다 추론" : "정상 모드";
+  setPillText(powerStateEl, lowPowerMode ? "저전력" : "정상", lowPowerMode ? "warn" : "success");
+  powerNote.textContent = lowPowerMode ? "FPS 12 이하, 추론 간격 증가" : "정상 모드";
 }
 
 function updateCommonUi(): void {
@@ -380,20 +599,31 @@ function setStoppedState(): void {
   rawRiskStreak = 0;
   riskHoldUntil = 0;
   lastWarnTtsAt = 0;
+  lastCrosswalkTtsAt = 0;
   lastDangerTtsAt = 0;
   roadMask = null;
   sidewalkMask = null;
+  crosswalkMask = null;
+  curbMask = null;
   roadMaskCanvas = null;
   sidewalkMaskCanvas = null;
+  crosswalkMaskCanvas = null;
+  curbMaskCanvas = null;
+  detectedLabels = [];
   nearSidewalkCoverageKnown = false;
   nearRoadCoverageKnown = false;
+  nearCrosswalkCoverageKnown = false;
   lookaheadSidewalkCoverageKnown = false;
   lookaheadRoadCoverageKnown = false;
-  farRoadCoverageKnown = false;
+  lookaheadCrosswalkCoverageKnown = false;
+  nearCurbCoverageKnown = false;
+  lookaheadCurbCoverageKnown = false;
   nearSidewalkCoverage = 0;
   nearRoadCoverage = 0;
   lookaheadSidewalkCoverage = 0;
   lookaheadRoadCoverage = 0;
+  nearCurbCoverage = 0;
+  lookaheadCurbCoverage = 0;
   farRoadCoverage = 0;
   updateSegUi();
   updateRiskUi();
@@ -403,7 +633,8 @@ function setStoppedState(): void {
 }
 
 function syncCanvasSize(): void {
-  const rect = video.getBoundingClientRect();
+  const stageElement = imageTestMode ? imageTestCanvasEl : video;
+  const rect = stageElement.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   const width = Math.max(1, Math.round(rect.width * dpr));
   const height = Math.max(1, Math.round(rect.height * dpr));
@@ -496,24 +727,64 @@ function drawZoneOverlay(sourceWidth: number, sourceHeight: number): void {
   overlayCtx.restore();
 }
 
+function drawCoverBottom(
+  ctx: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+): void {
+  const scale = Math.max(targetWidth / sourceWidth, targetHeight / sourceHeight);
+  const drawWidth = sourceWidth * scale;
+  const drawHeight = sourceHeight * scale;
+  const dx = (targetWidth - drawWidth) / 2;
+  const dy = targetHeight - drawHeight;
+
+  ctx.clearRect(0, 0, targetWidth, targetHeight);
+  ctx.drawImage(source, dx, dy, drawWidth, drawHeight);
+}
+
 function maskToSemanticMask(mask: unknown): SemanticMask | null {
-  const raw = mask as RawMaskLike | null | undefined;
-  if (!raw) return null;
+  const inspection = inspectMask(mask);
+  if (!inspection) return null;
+  return {
+    width: inspection.width,
+    height: inspection.height,
+    data: inspection.binaryData,
+  };
+}
 
-  const width = Number(raw.width ?? raw.size?.[0] ?? 0);
-  const height = Number(raw.height ?? raw.size?.[1] ?? 0);
-  const sourceData = raw.data;
-  if (!width || !height || !sourceData) return null;
-
-  const channels = Math.max(1, Number(raw.channels ?? raw.numChannels ?? 1));
-  const data = new Uint8Array(width * height);
-
-  for (let i = 0; i < data.length; i += 1) {
-    const value = Number(sourceData[i * channels] ?? 0);
-    data[i] = value > 0 ? 1 : 0;
+function mergeSemanticMasks(baseMask: SemanticMask | null, nextMask: SemanticMask | null): SemanticMask | null {
+  if (!baseMask) return nextMask;
+  if (!nextMask) return baseMask;
+  if (baseMask.width !== nextMask.width || baseMask.height !== nextMask.height) {
+    console.warn("[segformer] mask size mismatch", {
+      baseWidth: baseMask.width,
+      baseHeight: baseMask.height,
+      nextWidth: nextMask.width,
+      nextHeight: nextMask.height,
+    });
   }
 
-  return { width, height, data };
+  const width = baseMask.width;
+  const height = baseMask.height;
+  const merged = new Uint8Array(width * height);
+  const limit = Math.min(merged.length, baseMask.data.length, nextMask.data.length);
+
+  for (let i = 0; i < limit; i += 1) {
+    merged[i] = baseMask.data[i] === 1 || nextMask.data[i] === 1 ? 1 : 0;
+  }
+
+  for (let i = limit; i < merged.length; i += 1) {
+    merged[i] = baseMask.data[i] === 1 ? 1 : 0;
+  }
+
+  return {
+    width,
+    height,
+    data: merged,
+  };
 }
 
 function buildSemanticMaskCanvas(mask: SemanticMask, kind: MaskKind): HTMLCanvasElement | null {
@@ -524,8 +795,15 @@ function buildSemanticMaskCanvas(mask: SemanticMask, kind: MaskKind): HTMLCanvas
   if (!ctx) return null;
 
   const imageData = ctx.createImageData(mask.width, mask.height);
-  const color = kind === "road" ? [255, 107, 53] : [46, 204, 113];
-  const alpha = kind === "road" ? 92 : 108;
+  const color =
+    kind === "road"
+      ? [255, 107, 53]
+      : kind === "sidewalk"
+        ? [46, 204, 113]
+        : kind === "crosswalk"
+          ? [66, 165, 245]
+          : [255, 215, 0];
+  const alpha = kind === "road" ? 92 : kind === "sidewalk" ? 108 : kind === "crosswalk" ? 102 : 104;
 
   for (let i = 0; i < mask.data.length; i += 1) {
     const base = i * 4;
@@ -544,13 +822,47 @@ function buildSemanticMaskCanvas(mask: SemanticMask, kind: MaskKind): HTMLCanvas
 }
 
 function updateSemanticMasks(segments: RawSegmentLike[]): void {
-  const roadSegment = segments.find((segment) => String(segment?.label ?? "").toLowerCase() === "road");
-  const sidewalkSegment = segments.find((segment) => String(segment?.label ?? "").toLowerCase() === "sidewalk");
+  roadMask = null;
+  sidewalkMask = null;
+  crosswalkMask = null;
+  curbMask = null;
+  detectedLabels = Array.from(
+    new Set(
+      segments
+        .map((segment) => String(segment?.label ?? "").toLowerCase())
+        .filter((label) => label.length > 0),
+    ),
+  );
 
-  roadMask = maskToSemanticMask(roadSegment?.mask);
-  sidewalkMask = maskToSemanticMask(sidewalkSegment?.mask);
+  for (const segment of segments) {
+    const label = String(segment?.label ?? "").toLowerCase();
+    const mask = maskToSemanticMask(segment?.mask);
+    if (!mask) continue;
+
+    if (ROAD_DANGER_LABELS.has(label)) {
+      roadMask = mergeSemanticMasks(roadMask, mask);
+      continue;
+    }
+
+    if (SIDEWALK_LABELS.has(label)) {
+      sidewalkMask = mergeSemanticMasks(sidewalkMask, mask);
+      continue;
+    }
+
+    if (CROSSWALK_LABELS.has(label)) {
+      crosswalkMask = mergeSemanticMasks(crosswalkMask, mask);
+      continue;
+    }
+
+    if (CURB_LABELS.has(label)) {
+      curbMask = mergeSemanticMasks(curbMask, mask);
+    }
+  }
+
   roadMaskCanvas = roadMask ? buildSemanticMaskCanvas(roadMask, "road") : null;
   sidewalkMaskCanvas = sidewalkMask ? buildSemanticMaskCanvas(sidewalkMask, "sidewalk") : null;
+  crosswalkMaskCanvas = crosswalkMask ? buildSemanticMaskCanvas(crosswalkMask, "crosswalk") : null;
+  curbMaskCanvas = curbMask ? buildSemanticMaskCanvas(curbMask, "curb") : null;
 }
 
 function calculateMaskCoverage(mask: SemanticMask | null, zone: Zone): number | null {
@@ -580,72 +892,142 @@ function calculateMaskCoverage(mask: SemanticMask | null, zone: Zone): number | 
 function updateCoverageMetrics(): void {
   const nearSidewalk = calculateMaskCoverage(sidewalkMask, NEAR_ZONE);
   const nearRoad = calculateMaskCoverage(roadMask, NEAR_ZONE);
+  const nearCrosswalk = calculateMaskCoverage(crosswalkMask, NEAR_ZONE);
+  const nearCurb = calculateMaskCoverage(curbMask, NEAR_ZONE);
   const lookaheadSidewalk = calculateMaskCoverage(sidewalkMask, LOOKAHEAD_ZONE);
   const lookaheadRoad = calculateMaskCoverage(roadMask, LOOKAHEAD_ZONE);
+  const lookaheadCrosswalk = calculateMaskCoverage(crosswalkMask, LOOKAHEAD_ZONE);
+  const lookaheadCurb = calculateMaskCoverage(curbMask, LOOKAHEAD_ZONE);
   const farRoad = calculateMaskCoverage(roadMask, FAR_ZONE);
 
   nearSidewalkCoverageKnown = nearSidewalk !== null;
   nearRoadCoverageKnown = nearRoad !== null;
+  nearCrosswalkCoverageKnown = nearCrosswalk !== null;
+  nearCurbCoverageKnown = nearCurb !== null;
   lookaheadSidewalkCoverageKnown = lookaheadSidewalk !== null;
   lookaheadRoadCoverageKnown = lookaheadRoad !== null;
-  farRoadCoverageKnown = farRoad !== null;
+  lookaheadCrosswalkCoverageKnown = lookaheadCrosswalk !== null;
+  lookaheadCurbCoverageKnown = lookaheadCurb !== null;
 
-  nearSidewalkCoverage = nearSidewalk ?? 0;
-  nearRoadCoverage = nearRoad ?? 0;
-  lookaheadSidewalkCoverage = lookaheadSidewalk ?? 0;
-  lookaheadRoadCoverage = lookaheadRoad ?? 0;
-  farRoadCoverage = farRoad ?? 0;
+  if (imageTestMode) {
+    nearSidewalkCoverage = nearSidewalk ?? 0;
+    nearRoadCoverage = nearRoad ?? 0;
+    nearCrosswalkCoverage = nearCrosswalk ?? 0;
+    nearCurbCoverage = nearCurb ?? 0;
+    lookaheadSidewalkCoverage = lookaheadSidewalk ?? 0;
+    lookaheadRoadCoverage = lookaheadRoad ?? 0;
+    lookaheadCrosswalkCoverage = lookaheadCrosswalk ?? 0;
+    lookaheadCurbCoverage = lookaheadCurb ?? 0;
+    farRoadCoverage = farRoad ?? 0;
+    return;
+  }
+
+  nearSidewalkCoverage = nearSidewalk === null ? 0 : smoothCoverage(nearSidewalkCoverage, nearSidewalk);
+  nearRoadCoverage = nearRoad === null ? 0 : smoothCoverage(nearRoadCoverage, nearRoad);
+  nearCrosswalkCoverage = nearCrosswalk === null ? 0 : smoothCoverage(nearCrosswalkCoverage, nearCrosswalk);
+  nearCurbCoverage = nearCurb === null ? 0 : smoothCoverage(nearCurbCoverage, nearCurb);
+  lookaheadSidewalkCoverage =
+    lookaheadSidewalk === null ? 0 : smoothCoverage(lookaheadSidewalkCoverage, lookaheadSidewalk);
+  lookaheadRoadCoverage = lookaheadRoad === null ? 0 : smoothCoverage(lookaheadRoadCoverage, lookaheadRoad);
+  lookaheadCrosswalkCoverage =
+    lookaheadCrosswalk === null ? 0 : smoothCoverage(lookaheadCrosswalkCoverage, lookaheadCrosswalk);
+  lookaheadCurbCoverage = lookaheadCurb === null ? 0 : smoothCoverage(lookaheadCurbCoverage, lookaheadCurb);
+  farRoadCoverage = farRoad === null ? 0 : smoothCoverage(farRoadCoverage, farRoad);
 }
 
 function deriveRawRiskState(): RiskState {
-  if (!roadMask && !sidewalkMask) return "unknown";
-
-  const knownCount = [
-    nearSidewalkCoverageKnown,
-    nearRoadCoverageKnown,
-    lookaheadSidewalkCoverageKnown,
-    lookaheadRoadCoverageKnown,
-    farRoadCoverageKnown,
-  ].filter(Boolean).length;
-
-  if (knownCount < 3) return "unknown";
-
   const nearSidewalk = nearSidewalkCoverageKnown ? nearSidewalkCoverage : null;
   const nearRoad = nearRoadCoverageKnown ? nearRoadCoverage : null;
   const lookaheadSidewalk = lookaheadSidewalkCoverageKnown ? lookaheadSidewalkCoverage : null;
   const lookaheadRoad = lookaheadRoadCoverageKnown ? lookaheadRoadCoverage : null;
-  const farRoad = farRoadCoverageKnown ? farRoadCoverage : null;
+  const nearCrosswalk = nearCrosswalkCoverageKnown ? nearCrosswalkCoverage : null;
+  const lookaheadCrosswalk = lookaheadCrosswalkCoverageKnown ? lookaheadCrosswalkCoverage : null;
+  const nearCurb = nearCurbCoverageKnown ? nearCurbCoverage : null;
+  const lookaheadCurb = lookaheadCurbCoverageKnown ? lookaheadCurbCoverage : null;
 
-  if ((nearRoad !== null && nearRoad >= 0.35) || (lookaheadRoad !== null && lookaheadRoad >= 0.55)) {
+  if (
+    nearSidewalk === null &&
+    nearRoad === null &&
+    lookaheadRoad === null &&
+    nearCrosswalk === null &&
+    lookaheadCrosswalk === null
+  ) {
+    return "unknown";
+  }
+
+  if (
+    nearRoad !== null &&
+    nearRoad >= NEAR_ROAD_DANGER &&
+    (nearCrosswalk === null || nearCrosswalk < NEAR_CROSSWALK_MIN)
+  ) {
     return "danger";
   }
 
-  const onSidewalk =
-    nearSidewalk !== null &&
-    nearRoad !== null &&
-    nearSidewalk >= 0.5 &&
-    nearRoad < 0.35;
+  if (
+    lookaheadRoad !== null &&
+    lookaheadRoad >= LOOKAHEAD_ROAD_DANGER &&
+    (lookaheadCrosswalk === null || lookaheadCrosswalk < LOOKAHEAD_CROSSWALK_MIN)
+  ) {
+    return "danger";
+  }
 
-  if (!onSidewalk) return "unknown";
+  if (nearCrosswalk !== null && nearCrosswalk >= NEAR_CROSSWALK_MIN) {
+    return "crosswalk";
+  }
 
   if (
-    (lookaheadRoad !== null && lookaheadRoad >= 0.35) ||
-    (lookaheadSidewalk !== null && lookaheadSidewalk <= 0.4) ||
-    (farRoad !== null && farRoad >= 0.45)
+    lookaheadCrosswalk !== null &&
+    lookaheadCrosswalk >= LOOKAHEAD_CROSSWALK_MIN &&
+    (lookaheadRoad === null || lookaheadRoad < LOOKAHEAD_ROAD_DANGER)
+  ) {
+    return "crosswalk";
+  }
+
+  if (
+    lookaheadRoad !== null &&
+    lookaheadRoad >= LOOKAHEAD_ROAD_WARN
   ) {
     return "warn";
   }
 
   if (
-    lookaheadRoad !== null &&
-    lookaheadRoad < 0.25 &&
+    nearCurb !== null &&
+    nearCurb >= NEAR_CURB_WARN
+  ) {
+    return "warn";
+  }
+
+  if (
+    lookaheadCurb !== null &&
+    lookaheadCurb >= LOOKAHEAD_CURB_WARN
+  ) {
+    return "warn";
+  }
+
+  if (
+    nearSidewalk !== null &&
+    nearSidewalk >= ON_SIDEWALK_MIN &&
     lookaheadSidewalk !== null &&
-    lookaheadSidewalk >= 0.45
+    lookaheadSidewalk < nearSidewalk
+  ) {
+    return "warn";
+  }
+
+  if (
+    nearSidewalk !== null &&
+    nearSidewalk >= ON_SIDEWALK_MIN &&
+    nearRoad !== null &&
+    nearRoad < NEAR_ROAD_DANGER &&
+    lookaheadRoad !== null &&
+    lookaheadRoad < LOOKAHEAD_ROAD_WARN
+    &&
+    (nearCrosswalk === null || nearCrosswalk < NEAR_CROSSWALK_MIN) &&
+    (lookaheadCrosswalk === null || lookaheadCrosswalk < LOOKAHEAD_CROSSWALK_MIN)
   ) {
     return "safe";
   }
 
-  return "unknown";
+  return "warn";
 }
 
 function syncRiskState(now: number): void {
@@ -699,8 +1081,13 @@ function primeTts(): void {
 }
 
 function maybeSpeakRisk(now: number): void {
+  if (currentRiskState === "crosswalk" && now - lastCrosswalkTtsAt >= CROSSWALK_TTS_INTERVAL_MS) {
+    speak("횡단보도 구간입니다. 좌우를 확인하세요.");
+    lastCrosswalkTtsAt = now;
+  }
+
   if (currentRiskState === "warn" && now - lastWarnTtsAt >= WARN_TTS_INTERVAL_MS) {
-    speak("전방에 도로가 가까워지고 있습니다. 인도 안쪽으로 이동하세요.");
+    speak("전방에 도로 경계가 있습니다. 주의하세요.");
     lastWarnTtsAt = now;
   }
 
@@ -755,36 +1142,10 @@ async function assertBinaryFile(url: string, minBytes: number): Promise<void> {
   }
 }
 
-async function assertNoHtmlFallback(url: string): Promise<void> {
-  const response = await fetch(url, {
-    method: "GET",
-    cache: "no-store",
-  });
-
-  const text = await response.text();
-  const trimmed = text.trimStart().toLowerCase();
-
-  if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html")) {
-    throw new Error(`${url} returned HTML fallback. Vite or service worker is serving index.html for missing model file.`);
-  }
-}
-
 async function validateLocalSegformerFiles(): Promise<void> {
   await assertJsonFile(ROAD_SEG_CONFIG_URL);
   await assertJsonFile(ROAD_SEG_PREPROCESSOR_URL);
   await assertBinaryFile(ROAD_SEG_ONNX_URL, 1_000_000);
-
-  await assertNoHtmlFallback("/models/segformer-cityscapes/feature_extractor_config.json").catch((error) => {
-    console.warn(error);
-  });
-
-  await assertNoHtmlFallback("/models/segformer-cityscapes/processor_config.json").catch((error) => {
-    console.warn(error);
-  });
-
-  await assertNoHtmlFallback("/models/segformer-cityscapes/onnx/model.onnx").catch((error) => {
-    console.warn(error);
-  });
 }
 
 async function ensureRoadSegLoad(): Promise<void> {
@@ -811,12 +1172,13 @@ async function ensureRoadSegLoad(): Promise<void> {
         {
           model_file_name: "model",
           local_files_only: true,
+          dtype: "fp32",
         },
       )) as RoadSegmenter;
 
       roadSegState = "ready";
       roadSegErrorMessage = "";
-      segNote.textContent = "Local SegFormer 사용 중: /models/segformer-cityscapes";
+      segNote.textContent = "로컬 SegFormer 사용 중 /models/segformer-sidewalk";
       updateSegUi();
     } catch (error) {
       segmenter = null;
@@ -825,7 +1187,14 @@ async function ensureRoadSegLoad(): Promise<void> {
         error instanceof Error
           ? `SegFormer 로딩 실패: ${error.message}`
           : `SegFormer 로딩 실패: ${String(error)}`;
-      console.error("SegFormer local load failed", error);
+      console.error("[SegFormer load failed]", {
+        modelPath: ROAD_SEG_LOCAL_MODEL_DIR,
+        local_files_only: true,
+        allowRemoteModels: env.allowRemoteModels,
+        expectedOnnxPath: ROAD_SEG_ONNX_URL,
+        message: error instanceof Error ? error.message : String(error),
+        error,
+      });
       updateSegUi();
     } finally {
       roadSegLoadPromise = null;
@@ -836,28 +1205,55 @@ async function ensureRoadSegLoad(): Promise<void> {
 }
 
 async function runRoadSegmentation(): Promise<void> {
-  if (!segmenter || roadSegBusy || !running) return;
-  if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+  if (!video.videoWidth || !video.videoHeight) return;
+  await runRoadSegmentationFromSource(video, video.videoWidth, video.videoHeight);
+}
 
+async function runRoadSegmentationFromSource(
+  source: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+): Promise<void> {
   const now = performance.now();
-  if (now - lastSegAt < (lowPowerMode ? ROAD_SEG_SLOW_INTERVAL_MS : ROAD_SEG_INTERVAL_MS)) return;
+
+  if (
+    now - lastSegAt <
+    (lowPowerMode ? ROAD_SEG_SLOW_INTERVAL_MS : ROAD_SEG_INTERVAL_MS)
+  ) {
+    return;
+  }
+
+  if (roadSegBusy || !segmenter || !roadSegInputCtx) return;
 
   lastSegAt = now;
   roadSegBusy = true;
 
   try {
-    if (!roadSegInputCtx) throw new Error("road segmentation canvas context not available");
-    roadSegInputCtx.drawImage(video, 0, 0, ROAD_SEG_INPUT_W, ROAD_SEG_INPUT_H);
+    roadSegInputCanvas.width = ROAD_SEG_INPUT_W;
+    roadSegInputCanvas.height = ROAD_SEG_INPUT_H;
+
+    drawCoverBottom(
+      roadSegInputCtx,
+      source,
+      sourceWidth,
+      sourceHeight,
+      ROAD_SEG_INPUT_W,
+      ROAD_SEG_INPUT_H,
+    );
+
     const rawImage = RawImage.fromCanvas(roadSegInputCanvas);
     const result = await segmenter(rawImage);
-    const segments = Array.isArray(result) ? (result as RawSegmentLike[]) : [result as RawSegmentLike];
+    const segments = Array.isArray(result)
+      ? (result as RawSegmentLike[])
+      : [result as RawSegmentLike];
+    logSegmentMaskDetails(segments);
     updateSemanticMasks(segments);
   } catch (error) {
     roadSegState = "error";
     roadSegErrorMessage =
       error instanceof Error ? `SegFormer 추론 실패: ${error.message}` : `SegFormer 추론 실패: ${String(error)}`;
     updateSegUi();
-    console.error("road segmentation inference failed", error);
+    console.error("지면 분할 추론 실패", error);
   } finally {
     roadSegBusy = false;
   }
@@ -896,7 +1292,103 @@ function renderOverlayFrame(sourceWidth: number, sourceHeight: number): void {
     drawSemanticMask(sidewalkMaskCanvas, sidewalkMaskCanvas.width, sidewalkMaskCanvas.height, "sidewalk");
   }
 
+  if (crosswalkMaskCanvas) {
+    drawSemanticMask(crosswalkMaskCanvas, crosswalkMaskCanvas.width, crosswalkMaskCanvas.height, "crosswalk");
+  }
+
+  if (curbMaskCanvas) {
+    drawSemanticMask(curbMaskCanvas, curbMaskCanvas.width, curbMaskCanvas.height, "curb");
+  }
+
   drawZoneOverlay(sourceWidth, sourceHeight);
+}
+
+function stopCameraOnlyButKeepUi(): void {
+  if (stream) {
+    stream.getTracks().forEach((track) => track.stop());
+    stream = null;
+  }
+
+  video.pause();
+  video.srcObject = null;
+}
+
+function drawImageTestSource(): void {
+  if (!imageTestBitmap || !imageTestCtx) return;
+
+  imageTestCanvasEl.width = ROAD_SEG_INPUT_W;
+  imageTestCanvasEl.height = ROAD_SEG_INPUT_H;
+
+  drawCoverBottom(
+    imageTestCtx,
+    imageTestBitmap,
+    imageTestBitmap.width,
+    imageTestBitmap.height,
+    ROAD_SEG_INPUT_W,
+    ROAD_SEG_INPUT_H,
+  );
+
+  overlay.width = ROAD_SEG_INPUT_W;
+  overlay.height = ROAD_SEG_INPUT_H;
+
+  video.classList.add("hidden");
+  imageTestCanvasEl.classList.remove("hidden");
+}
+
+async function loadImageTestFile(file: File): Promise<void> {
+  imageTestBitmap?.close?.();
+  imageTestBitmap = await createImageBitmap(file);
+  imageTestMode = true;
+
+  stopCameraOnlyButKeepUi();
+  drawImageTestSource();
+
+  setPillText(camState, "이미지 모드", "warn");
+  cameraLabel.textContent = "이미지 모드";
+}
+
+async function runImageTestAnalysis(): Promise<void> {
+  if (!imageTestMode || !imageTestBitmap || !imageTestRun) return;
+
+  imageTestRun.disabled = true;
+  imageTestRun.textContent = "분석 중...";
+
+  try {
+    await ensureRoadSegLoad();
+    drawImageTestSource();
+    clearOverlay();
+
+    lastSegAt = 0;
+
+    await runRoadSegmentationFromSource(
+      imageTestCanvasEl,
+      imageTestCanvasEl.width,
+      imageTestCanvasEl.height,
+    );
+
+    updateCoverageMetrics();
+    syncRiskState(performance.now());
+    renderOverlayFrame(imageTestCanvasEl.width, imageTestCanvasEl.height);
+    updateRiskUi();
+    updateCommonUi();
+
+    setPillText(camState, "이미지 모드", "warn");
+    cameraLabel.textContent = "이미지 모드";
+  } catch (error) {
+    console.error("이미지 분석 실패", error);
+    setPillText(camState, "이미지 분석 실패", "bad");
+  } finally {
+    imageTestRun.disabled = false;
+    imageTestRun.textContent = "이미지 분석";
+  }
+}
+
+function setCameraMode(): void {
+  imageTestMode = false;
+  imageTestCanvasEl.classList.add("hidden");
+  video.classList.remove("hidden");
+  clearOverlay();
+  updateCommonUi();
 }
 
 async function start(): Promise<void> {
@@ -904,6 +1396,7 @@ async function start(): Promise<void> {
 
   startButton.disabled = true;
   primeTts();
+  setCameraMode();
 
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -929,13 +1422,20 @@ async function start(): Promise<void> {
     segmenter = null;
     roadMask = null;
     sidewalkMask = null;
+    crosswalkMask = null;
+    curbMask = null;
     roadMaskCanvas = null;
     sidewalkMaskCanvas = null;
+    crosswalkMaskCanvas = null;
+    curbMaskCanvas = null;
+    nearCurbCoverageKnown = false;
+    lookaheadCurbCoverageKnown = false;
+    nearCurbCoverage = 0;
+    lookaheadCurbCoverage = 0;
     nearSidewalkCoverageKnown = false;
     nearRoadCoverageKnown = false;
     lookaheadSidewalkCoverageKnown = false;
     lookaheadRoadCoverageKnown = false;
-    farRoadCoverageKnown = false;
     nearSidewalkCoverage = 0;
     nearRoadCoverage = 0;
     lookaheadSidewalkCoverage = 0;
@@ -947,6 +1447,7 @@ async function start(): Promise<void> {
     rawRiskStreak = 0;
     riskHoldUntil = 0;
     lastWarnTtsAt = 0;
+    lastCrosswalkTtsAt = 0;
     lastDangerTtsAt = 0;
 
     updateSegUi();
@@ -963,7 +1464,7 @@ async function start(): Promise<void> {
     void ensureRoadSegLoad();
     rafId = window.requestAnimationFrame(renderLoop);
   } catch (error) {
-    console.error("camera start failed", error);
+    console.error("카메라 시작 실패", error);
     stream?.getTracks().forEach((track) => track.stop());
     stream = null;
     running = false;
@@ -993,8 +1494,21 @@ function stop(): void {
   roadSegBusy = false;
   roadMask = null;
   sidewalkMask = null;
+  crosswalkMask = null;
+  curbMask = null;
   roadMaskCanvas = null;
   sidewalkMaskCanvas = null;
+  crosswalkMaskCanvas = null;
+  curbMaskCanvas = null;
+  nearCrosswalkCoverageKnown = false;
+  lookaheadCrosswalkCoverageKnown = false;
+  nearCrosswalkCoverage = 0;
+  lookaheadCrosswalkCoverage = 0;
+  nearCurbCoverageKnown = false;
+  lookaheadCurbCoverageKnown = false;
+  nearCurbCoverage = 0;
+  lookaheadCurbCoverage = 0;
+  lastCrosswalkTtsAt = 0;
   setStoppedState();
 }
 
@@ -1014,7 +1528,10 @@ function renderLoop(now: number): void {
 
   updateCoverageMetrics();
   syncRiskState(now);
-  renderOverlayFrame(video.videoWidth || ROAD_SEG_INPUT_W, video.videoHeight || ROAD_SEG_INPUT_H);
+  renderOverlayFrame(
+    imageTestMode ? imageTestCanvasEl.width || ROAD_SEG_INPUT_W : video.videoWidth || ROAD_SEG_INPUT_W,
+    imageTestMode ? imageTestCanvasEl.height || ROAD_SEG_INPUT_H : video.videoHeight || ROAD_SEG_INPUT_H,
+  );
   updateRiskUi();
   updateCommonUi();
   maybeSpeakRisk(now);
@@ -1024,6 +1541,28 @@ function renderLoop(now: number): void {
 
 startButton.addEventListener("click", () => {
   void start();
+});
+
+imageTestInputEl.addEventListener("change", async () => {
+  const file = imageTestInputEl.files?.[0];
+  if (!file) return;
+
+  try {
+    await loadImageTestFile(file);
+  } catch (error) {
+    console.error("이미지 파일 로드 실패", error);
+    showSegError(error instanceof Error ? error.message : String(error));
+  } finally {
+    imageTestInputEl.value = "";
+  }
+});
+
+imageTestRun?.addEventListener("click", () => {
+  void runImageTestAnalysis();
+});
+
+cameraModeButtonEl.addEventListener("click", () => {
+  setCameraMode();
 });
 
 stopButton.addEventListener("click", () => {
@@ -1043,3 +1582,6 @@ updateRiskUi();
 updatePowerUi();
 updateCommonUi();
 setStoppedState();
+
+
+

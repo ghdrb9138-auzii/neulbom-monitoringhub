@@ -8,7 +8,7 @@
     0.456,
     0.406
   ],
-  "image_processor_type": "SegformerFeatureExtractor",
+  "image_processor_type": "SegformerImageProcessor",
   "image_std": [
     0.229,
     0.224,

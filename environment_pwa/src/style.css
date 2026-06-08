@@ -172,6 +172,7 @@ button {
 }
 
 #video,
+#image-test-canvas,
 #overlay {
   position: absolute;
   inset: 0;
@@ -188,6 +189,10 @@ button {
 #overlay {
   z-index: 1;
   pointer-events: none;
+}
+
+.hidden {
+  display: none !important;
 }
 
 .overlay-badge {
@@ -224,6 +229,16 @@ button {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.controls input[type="file"] {
+  flex: 1 1 220px;
+  min-height: 52px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(255, 255, 255, 0.76);
+  color: #0f172a;
 }
 
 .controls button {
