@@ -4,6 +4,16 @@ import { env, pipeline, RawImage } from "@huggingface/transformers";
 
 type SegState = "idle" | "loading" | "ready" | "error";
 type RiskState = "unknown" | "safe" | "crosswalk" | "warn" | "danger";
+type AlertProfile = {
+  state: RiskState;
+  visualClass: string;
+  label: string;
+  beepPattern: number[];
+  beepFrequency: number;
+  vibrationPattern: number[];
+  ttsText: string | null;
+  cooldownMs: number;
+};
 type MaskKind = "road" | "sidewalk" | "crosswalk" | "curb";
 
 type SemanticMask = {
@@ -50,7 +60,7 @@ const ROAD_SEG_ONNX_URL = "/models/segformer-sidewalk/onnx/model.onnx";
 const ROAD_SEG_INPUT_W = 512;
 const ROAD_SEG_INPUT_H = 512;
 const ROAD_SEG_INTERVAL_MS = 900;
-const ROAD_SEG_SLOW_INTERVAL_MS = 1500;
+const ROAD_SEG_SLOW_INTERVAL_MS = 1400;
 const ROAD_DANGER_LABELS = new Set([
   "flat-road",
   "flat-cyclinglane",
@@ -109,6 +119,93 @@ const NEAR_CURB_WARN = 0.10;
 const NEAR_CROSSWALK_MIN = 0.22;
 const LOOKAHEAD_CROSSWALK_MIN = 0.20;
 
+const ALERT_PROFILES: Record<RiskState, AlertProfile> = {
+  unknown: {
+    state: "unknown",
+    visualClass: "pill-neutral",
+    label: "지면 인식 불안정",
+    beepPattern: [],
+    beepFrequency: 0,
+    vibrationPattern: [],
+    ttsText: null,
+    cooldownMs: 0,
+  },
+  safe: {
+    state: "safe",
+    visualClass: "pill-neutral",
+    label: "인도 보행 중",
+    beepPattern: [],
+    beepFrequency: 0,
+    vibrationPattern: [],
+    ttsText: null,
+    cooldownMs: 0,
+  },
+  crosswalk: {
+    state: "crosswalk",
+    visualClass: "pill-neutral",
+    label: "횡단보도 보행 구간",
+    beepPattern: [180, 180, 180],
+    beepFrequency: 880,
+    vibrationPattern: [160, 80, 160],
+    ttsText: "횡단보도 구간입니다. 좌우를 확인하세요.",
+    cooldownMs: CROSSWALK_TTS_INTERVAL_MS,
+  },
+  warn: {
+    state: "warn",
+    visualClass: "pill-warn",
+    label: "도로 경계 접근 주의",
+    beepPattern: [220, 120, 220],
+    beepFrequency: 660,
+    vibrationPattern: [220, 80, 220],
+    ttsText: "전방에 도로 경계가 있습니다. 주의하세요.",
+    cooldownMs: WARN_TTS_INTERVAL_MS,
+  },
+  danger: {
+    state: "danger",
+    visualClass: "pill-bad",
+    label: "도로 진입 위험",
+    beepPattern: [120, 80, 120, 80, 120],
+    beepFrequency: 1046,
+    vibrationPattern: [120, 60, 120, 60, 120],
+    ttsText: "위험, 도로 진입이 감지되었습니다. 즉시 멈추세요.",
+    cooldownMs: DANGER_TTS_INTERVAL_MS,
+  },
+};
+
+type AlertToastProfile = {
+  title: string;
+  message: string;
+  className: string;
+};
+
+const ALERT_TOASTS: Record<RiskState, AlertToastProfile> = {
+  unknown: {
+    title: "지면 인식 불안정",
+    message: "카메라 인식을 확인하세요.",
+    className: "toast-unknown",
+  },
+  safe: {
+    title: "안전",
+    message: "안정적으로 보행 중입니다.",
+    className: "toast-safe",
+  },
+  crosswalk: {
+    title: "횡단보도",
+    message: "좌우를 확인하세요.",
+    className: "toast-crosswalk",
+  },
+  warn: {
+    title: "주의",
+    message: "전방 경계에 접근 중입니다.",
+    className: "toast-warn",
+  },
+  danger: {
+    title: "도로 진입 위험",
+    message: "즉시 멈추세요.",
+    className: "toast-danger",
+  },
+};
+
 const originalFetch = globalThis.fetch.bind(globalThis);
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   const url =
@@ -159,10 +256,16 @@ app.innerHTML = `
       </div>
 
       <div class="video-frame">
-        <video id="video" autoplay muted playsinline webkit-playsinline></video>
+        <video id="video" class="hidden" autoplay muted playsinline webkit-playsinline></video>
+        <canvas id="camera-preview-canvas" class="hidden"></canvas>
         <canvas id="image-test-canvas" class="hidden"></canvas>
         <canvas id="overlay"></canvas>
         <div class="overlay-badge" id="overlay-badge">지면 인식 불안정</div>
+      </div>
+
+      <div id="alert-toast" class="alert-toast hidden">
+        <strong id="alert-toast-title">도로 진입 위험</strong>
+        <span id="alert-toast-message">즉시 멈추세요.</span>
       </div>
 
       <div id="seg-error" class="error-banner hidden" role="status" aria-live="polite"></div>
@@ -172,6 +275,8 @@ app.innerHTML = `
       <input id="image-test-input" type="file" accept="image/*" />
       <button id="image-test-run" type="button" class="secondary">이미지 분석</button>
       <button id="camera-mode" type="button" class="secondary">카메라 모드</button>
+      <button id="enable-alerts" type="button" class="secondary">알림 활성화</button>
+      <button id="test-danger-alert" type="button" class="secondary">위험 알림 테스트</button>
       <button id="start" type="button">Start</button>
       <button id="stop" type="button" class="secondary">Stop</button>
       <button id="announce" type="button" class="secondary">TTS 테스트</button>
@@ -217,11 +322,20 @@ const imageTestRun = document.querySelector<HTMLButtonElement>("#image-test-run"
 const cameraModeButton = document.querySelector<HTMLButtonElement>("#camera-mode");
 const imageTestCanvas = document.querySelector<HTMLCanvasElement>("#image-test-canvas");
 const imageTestCtx = imageTestCanvas?.getContext("2d") ?? null;
+const cameraPreviewCanvas = document.querySelector<HTMLCanvasElement>("#camera-preview-canvas");
+const cameraPreviewCtx = cameraPreviewCanvas?.getContext("2d", { willReadFrequently: true }) ?? null;
 const overlay = document.getElementById("overlay") as HTMLCanvasElement;
 const overlayBadge = document.getElementById("overlay-badge") as HTMLDivElement;
+const alertToast = document.getElementById("alert-toast") as HTMLDivElement;
+const alertToastTitle = document.getElementById("alert-toast-title") as HTMLElement;
+const alertToastMessage = document.getElementById("alert-toast-message") as HTMLSpanElement;
+const stageShell = document.querySelector<HTMLElement>(".stage-shell");
+const videoFrame = document.querySelector<HTMLElement>(".video-frame");
 const startButton = document.getElementById("start") as HTMLButtonElement;
 const stopButton = document.getElementById("stop") as HTMLButtonElement;
 const announceButton = document.getElementById("announce") as HTMLButtonElement;
+const enableAlertsButton = document.querySelector<HTMLButtonElement>("#enable-alerts");
+const testDangerAlertButton = document.querySelector<HTMLButtonElement>("#test-danger-alert");
 
 const appState = document.getElementById("app-state") as HTMLSpanElement;
 const camState = document.getElementById("cam-state") as HTMLSpanElement;
@@ -241,18 +355,27 @@ const ttsLabel = document.getElementById("tts-label") as HTMLDivElement;
 const segError = document.getElementById("seg-error") as HTMLDivElement;
 
 const overlayCtx = overlay.getContext("2d");
-const roadSegInputCanvas = document.createElement("canvas");
-roadSegInputCanvas.width = ROAD_SEG_INPUT_W;
-roadSegInputCanvas.height = ROAD_SEG_INPUT_H;
-const roadSegInputCtx = roadSegInputCanvas.getContext("2d", { willReadFrequently: true });
-
-if (!imageTestInput || !imageTestRun || !cameraModeButton || !imageTestCanvas || !imageTestCtx) {
+if (
+  !imageTestInput ||
+  !imageTestRun ||
+  !cameraModeButton ||
+  !imageTestCanvas ||
+  !imageTestCtx ||
+  !cameraPreviewCanvas ||
+  !cameraPreviewCtx
+) {
   throw new Error("이미지 테스트 컨트롤을 찾을 수 없습니다.");
 }
 
 const imageTestInputEl: HTMLInputElement = imageTestInput;
 const cameraModeButtonEl: HTMLButtonElement = cameraModeButton;
 const imageTestCanvasEl: HTMLCanvasElement = imageTestCanvas;
+const cameraPreviewCanvasEl: HTMLCanvasElement = cameraPreviewCanvas;
+
+cameraPreviewCanvasEl.width = ROAD_SEG_INPUT_W;
+cameraPreviewCanvasEl.height = ROAD_SEG_INPUT_H;
+imageTestCanvasEl.width = ROAD_SEG_INPUT_W;
+imageTestCanvasEl.height = ROAD_SEG_INPUT_H;
 
 async function clearDevServiceWorkersAndCaches(): Promise<void> {
   if (!import.meta.env.DEV) return;
@@ -305,6 +428,7 @@ let hasPrimedTts = false;
 let roadSegState: SegState = "idle";
 let roadSegErrorMessage = "";
 let roadSegBusy = false;
+let roadSegInFlight = false;
 let roadSegLoadPromise: Promise<void> | null = null;
 let segmenter: RoadSegmenter | null = null;
 let imageTestMode = false;
@@ -343,9 +467,10 @@ let currentRiskState: RiskState = "unknown";
 let lastRawRiskState: RiskState = "unknown";
 let rawRiskStreak = 0;
 let riskHoldUntil = 0;
-let lastWarnTtsAt = 0;
-let lastCrosswalkTtsAt = 0;
-let lastDangerTtsAt = 0;
+let audioContext: AudioContext | null = null;
+let alertsEnabled = false;
+let lastAlertAt = 0;
+let lastAlertState: RiskState = "unknown";
 let lastSegAt = 0;
 
 function setPillText(
@@ -571,6 +696,35 @@ function updateRiskUi(): void {
         ? "warn"
         : "bad",
   );
+
+  applyVisualAlert(currentRiskState);
+}
+
+function applyVisualAlert(state: RiskState): void {
+  const riskClass = `risk-${state}`;
+  stageShell?.classList.remove("risk-unknown", "risk-safe", "risk-crosswalk", "risk-warn", "risk-danger");
+  videoFrame?.classList.remove("risk-unknown", "risk-safe", "risk-crosswalk", "risk-warn", "risk-danger");
+  stageShell?.classList.add(riskClass);
+  videoFrame?.classList.add(riskClass);
+  updateAlertToast(state);
+}
+
+function updateAlertToast(state: RiskState): void {
+  const profile = ALERT_TOASTS[state];
+  if (!profile) return;
+
+  alertToastTitle.textContent = profile.title;
+  alertToastMessage.textContent = profile.message;
+
+  alertToast.classList.remove("toast-unknown", "toast-safe", "toast-crosswalk", "toast-warn", "toast-danger");
+  alertToast.classList.add(profile.className);
+
+  if (state === "safe") {
+    alertToast.classList.add("hidden");
+    return;
+  }
+
+  alertToast.classList.remove("hidden");
 }
 
 function updatePowerUi(): void {
@@ -598,9 +752,6 @@ function setStoppedState(): void {
   lastRawRiskState = "unknown";
   rawRiskStreak = 0;
   riskHoldUntil = 0;
-  lastWarnTtsAt = 0;
-  lastCrosswalkTtsAt = 0;
-  lastDangerTtsAt = 0;
   roadMask = null;
   sidewalkMask = null;
   crosswalkMask = null;
@@ -633,11 +784,9 @@ function setStoppedState(): void {
 }
 
 function syncCanvasSize(): void {
-  const stageElement = imageTestMode ? imageTestCanvasEl : video;
-  const rect = stageElement.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  const width = Math.max(1, Math.round(rect.width * dpr));
-  const height = Math.max(1, Math.round(rect.height * dpr));
+  const activeCanvas = imageTestMode ? imageTestCanvasEl : cameraPreviewCanvasEl;
+  const width = activeCanvas.width || ROAD_SEG_INPUT_W;
+  const height = activeCanvas.height || ROAD_SEG_INPUT_H;
 
   if (overlay.width !== width) overlay.width = width;
   if (overlay.height !== height) overlay.height = height;
@@ -1034,6 +1183,14 @@ function syncRiskState(now: number): void {
   const nextRaw = deriveRawRiskState();
   rawRiskState = nextRaw;
 
+  if (imageTestMode) {
+    currentRiskState = nextRaw;
+    lastRawRiskState = nextRaw;
+    rawRiskStreak = 1;
+    riskHoldUntil = 0;
+    return;
+  }
+
   if (nextRaw === lastRawRiskState) {
     rawRiskStreak += 1;
   } else {
@@ -1041,17 +1198,34 @@ function syncRiskState(now: number): void {
     rawRiskStreak = 1;
   }
 
-  if (rawRiskStreak < 3) return;
+  if (nextRaw === "danger") {
+    currentRiskState = "danger";
+    riskHoldUntil = now + DANGER_HOLD_MS;
+    return;
+  }
 
-  if (currentRiskState === "danger" && nextRaw !== "danger" && now < riskHoldUntil) return;
-  if (currentRiskState === "warn" && nextRaw !== "warn" && now < riskHoldUntil) return;
+  if (nextRaw === "safe") {
+    if (currentRiskState === "safe") {
+      riskHoldUntil = 0;
+      return;
+    }
+
+    if (rawRiskStreak < 3) return;
+
+    currentRiskState = "safe";
+    riskHoldUntil = 0;
+    return;
+  }
+
+  if (currentRiskState === "danger" && now < riskHoldUntil) return;
+  if (rawRiskStreak < 2) return;
 
   if (currentRiskState !== nextRaw) {
     currentRiskState = nextRaw;
-    if (nextRaw === "danger") {
-      riskHoldUntil = now + DANGER_HOLD_MS;
-    } else if (nextRaw === "warn") {
+    if (nextRaw === "warn") {
       riskHoldUntil = now + WARN_HOLD_MS;
+    } else {
+      riskHoldUntil = 0;
     }
   }
 }
@@ -1080,21 +1254,103 @@ function primeTts(): void {
   hasPrimedTts = true;
 }
 
-function maybeSpeakRisk(now: number): void {
-  if (currentRiskState === "crosswalk" && now - lastCrosswalkTtsAt >= CROSSWALK_TTS_INTERVAL_MS) {
-    speak("횡단보도 구간입니다. 좌우를 확인하세요.");
-    lastCrosswalkTtsAt = now;
+type WindowWithWebkitAudioContext = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
+
+async function ensureAudioContext(): Promise<AudioContext | null> {
+  if (audioContext && audioContext.state !== "closed") {
+    if (audioContext.state === "suspended") {
+      try {
+        await audioContext.resume();
+      } catch {
+        return audioContext;
+      }
+    }
+
+    return audioContext;
   }
 
-  if (currentRiskState === "warn" && now - lastWarnTtsAt >= WARN_TTS_INTERVAL_MS) {
-    speak("전방에 도로 경계가 있습니다. 주의하세요.");
-    lastWarnTtsAt = now;
+  const AudioContextCtor =
+    window.AudioContext ?? (window as WindowWithWebkitAudioContext).webkitAudioContext;
+  if (!AudioContextCtor) return null;
+
+  audioContext = new AudioContextCtor();
+
+  if (audioContext.state === "suspended") {
+    try {
+      await audioContext.resume();
+    } catch {
+      return audioContext;
+    }
   }
 
-  if (currentRiskState === "danger" && now - lastDangerTtsAt >= DANGER_TTS_INTERVAL_MS) {
-    speak("위험, 도로 진입이 감지되었습니다. 즉시 멈추세요.");
-    lastDangerTtsAt = now;
+  return audioContext;
+}
+
+async function playBeepPattern(pattern: number[], frequency: number): Promise<void> {
+  if (!pattern.length || frequency <= 0) return;
+
+  const context = await ensureAudioContext();
+  if (!context || context.state === "closed") return;
+
+  let cursor = context.currentTime + 0.02;
+
+  for (let i = 0; i < pattern.length; i += 1) {
+    const durationMs = Math.max(0, pattern[i]);
+    if (durationMs === 0) continue;
+
+    if (i % 2 === 0) {
+      const durationSec = durationMs / 1000;
+      const attack = Math.min(0.01, durationSec / 4);
+      const release = Math.min(0.02, durationSec / 4);
+      const oscillator = context.createOscillator();
+      const gainNode = context.createGain();
+
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(frequency, cursor);
+      gainNode.gain.setValueAtTime(0.0001, cursor);
+      gainNode.gain.exponentialRampToValueAtTime(0.12, cursor + attack);
+      gainNode.gain.setValueAtTime(
+        0.12,
+        Math.max(cursor + attack, cursor + durationSec - release),
+      );
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, cursor + durationSec);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(context.destination);
+      oscillator.start(cursor);
+      oscillator.stop(cursor + durationSec + 0.03);
+    }
+
+    cursor += durationMs / 1000;
   }
+}
+
+function vibratePattern(pattern: number[]): void {
+  if (!pattern.length || !("vibrate" in navigator)) return;
+
+  navigator.vibrate(pattern);
+}
+
+function maybeTriggerAlert(now: number): void {
+  const profile = ALERT_PROFILES[currentRiskState];
+  if (!alertsEnabled) return;
+  if (profile.cooldownMs <= 0) return;
+
+  if (lastAlertState === currentRiskState && now - lastAlertAt < profile.cooldownMs) {
+    return;
+  }
+
+  lastAlertState = currentRiskState;
+  lastAlertAt = now;
+
+  if (profile.ttsText) {
+    speak(profile.ttsText);
+  }
+
+  void playBeepPattern(profile.beepPattern, profile.beepFrequency);
+  vibratePattern(profile.vibrationPattern);
 }
 
 async function assertJsonFile(url: string): Promise<void> {
@@ -1205,43 +1461,33 @@ async function ensureRoadSegLoad(): Promise<void> {
 }
 
 async function runRoadSegmentation(): Promise<void> {
-  if (!video.videoWidth || !video.videoHeight) return;
-  await runRoadSegmentationFromSource(video, video.videoWidth, video.videoHeight);
-}
-
-async function runRoadSegmentationFromSource(
-  source: CanvasImageSource,
-  sourceWidth: number,
-  sourceHeight: number,
-): Promise<void> {
-  const now = performance.now();
-
-  if (
-    now - lastSegAt <
-    (lowPowerMode ? ROAD_SEG_SLOW_INTERVAL_MS : ROAD_SEG_INTERVAL_MS)
-  ) {
+  if (imageTestMode) {
+    if (!imageTestCanvasEl.width || !imageTestCanvasEl.height) return;
+    await runRoadSegmentationFromSource(imageTestCanvasEl);
     return;
   }
 
-  if (roadSegBusy || !segmenter || !roadSegInputCtx) return;
+  if (!cameraPreviewCanvasEl.width || !cameraPreviewCanvasEl.height) return;
+  await runRoadSegmentationFromSource(cameraPreviewCanvasEl);
+}
 
-  lastSegAt = now;
+async function runRoadSegmentationFromSource(
+  source: HTMLCanvasElement | OffscreenCanvas,
+): Promise<void> {
+  const now = performance.now();
+
+  if (!imageTestMode && now - lastSegAt < (lowPowerMode ? ROAD_SEG_SLOW_INTERVAL_MS : ROAD_SEG_INTERVAL_MS)) {
+    return;
+  }
+
+  if (roadSegInFlight || roadSegBusy || !segmenter) return;
+
+  roadSegInFlight = true;
   roadSegBusy = true;
 
   try {
-    roadSegInputCanvas.width = ROAD_SEG_INPUT_W;
-    roadSegInputCanvas.height = ROAD_SEG_INPUT_H;
-
-    drawCoverBottom(
-      roadSegInputCtx,
-      source,
-      sourceWidth,
-      sourceHeight,
-      ROAD_SEG_INPUT_W,
-      ROAD_SEG_INPUT_H,
-    );
-
-    const rawImage = RawImage.fromCanvas(roadSegInputCanvas);
+    lastSegAt = now;
+    const rawImage = RawImage.fromCanvas(source);
     const result = await segmenter(rawImage);
     const segments = Array.isArray(result)
       ? (result as RawSegmentLike[])
@@ -1255,6 +1501,7 @@ async function runRoadSegmentationFromSource(
     updateSegUi();
     console.error("지면 분할 추론 실패", error);
   } finally {
+    roadSegInFlight = false;
     roadSegBusy = false;
   }
 }
@@ -1313,6 +1560,23 @@ function stopCameraOnlyButKeepUi(): void {
   video.srcObject = null;
 }
 
+function drawCameraPreviewSource(): void {
+  if (!cameraPreviewCtx) return;
+  if (!video.videoWidth || !video.videoHeight) return;
+
+  cameraPreviewCanvasEl.width = ROAD_SEG_INPUT_W;
+  cameraPreviewCanvasEl.height = ROAD_SEG_INPUT_H;
+
+  drawCoverBottom(
+    cameraPreviewCtx,
+    video,
+    video.videoWidth,
+    video.videoHeight,
+    ROAD_SEG_INPUT_W,
+    ROAD_SEG_INPUT_H,
+  );
+}
+
 function drawImageTestSource(): void {
   if (!imageTestBitmap || !imageTestCtx) return;
 
@@ -1332,6 +1596,7 @@ function drawImageTestSource(): void {
   overlay.height = ROAD_SEG_INPUT_H;
 
   video.classList.add("hidden");
+  cameraPreviewCanvasEl.classList.add("hidden");
   imageTestCanvasEl.classList.remove("hidden");
 }
 
@@ -1360,16 +1625,13 @@ async function runImageTestAnalysis(): Promise<void> {
 
     lastSegAt = 0;
 
-    await runRoadSegmentationFromSource(
-      imageTestCanvasEl,
-      imageTestCanvasEl.width,
-      imageTestCanvasEl.height,
-    );
+    await runRoadSegmentationFromSource(imageTestCanvasEl);
 
     updateCoverageMetrics();
     syncRiskState(performance.now());
     renderOverlayFrame(imageTestCanvasEl.width, imageTestCanvasEl.height);
     updateRiskUi();
+    applyVisualAlert(currentRiskState);
     updateCommonUi();
 
     setPillText(camState, "이미지 모드", "warn");
@@ -1386,7 +1648,7 @@ async function runImageTestAnalysis(): Promise<void> {
 function setCameraMode(): void {
   imageTestMode = false;
   imageTestCanvasEl.classList.add("hidden");
-  video.classList.remove("hidden");
+  cameraPreviewCanvasEl.classList.remove("hidden");
   clearOverlay();
   updateCommonUi();
 }
@@ -1412,6 +1674,7 @@ async function start(): Promise<void> {
     await video.play();
 
     running = true;
+    imageTestMode = false;
     frameCount = 0;
     lastFrameAt = 0;
     fps = 0;
@@ -1419,6 +1682,7 @@ async function start(): Promise<void> {
     roadSegState = "idle";
     roadSegErrorMessage = "";
     roadSegBusy = false;
+    roadSegInFlight = false;
     segmenter = null;
     roadMask = null;
     sidewalkMask = null;
@@ -1446,9 +1710,13 @@ async function start(): Promise<void> {
     lastRawRiskState = "unknown";
     rawRiskStreak = 0;
     riskHoldUntil = 0;
-    lastWarnTtsAt = 0;
-    lastCrosswalkTtsAt = 0;
-    lastDangerTtsAt = 0;
+    lastAlertAt = 0;
+    lastAlertState = "unknown";
+
+    cameraPreviewCanvasEl.width = ROAD_SEG_INPUT_W;
+    cameraPreviewCanvasEl.height = ROAD_SEG_INPUT_H;
+    cameraPreviewCanvasEl.classList.remove("hidden");
+    imageTestCanvasEl.classList.add("hidden");
 
     updateSegUi();
     updateRiskUi();
@@ -1485,13 +1753,24 @@ function stop(): void {
     window.speechSynthesis.cancel();
   }
 
+  alertsEnabled = false;
+  lastAlertAt = 0;
+  lastAlertState = "unknown";
+
+  if (audioContext && audioContext.state !== "closed") {
+    void audioContext.close();
+  }
+  audioContext = null;
+
   const currentStream = stream;
   stream = null;
   currentStream?.getTracks().forEach((track) => track.stop());
   video.srcObject = null;
   clearOverlay();
   lowPowerMode = false;
+  cameraPreviewCanvasEl.classList.add("hidden");
   roadSegBusy = false;
+  roadSegInFlight = false;
   roadMask = null;
   sidewalkMask = null;
   crosswalkMask = null;
@@ -1508,14 +1787,35 @@ function stop(): void {
   lookaheadCurbCoverageKnown = false;
   nearCurbCoverage = 0;
   lookaheadCurbCoverage = 0;
-  lastCrosswalkTtsAt = 0;
   setStoppedState();
+}
+
+function enableAlerts(): void {
+  alertsEnabled = true;
+  void ensureAudioContext();
+  primeTts();
+  if (enableAlertsButton) {
+    enableAlertsButton.textContent = "알림 활성화됨";
+  }
+}
+
+async function testDangerAlert(): Promise<void> {
+  enableAlerts();
+  lastAlertState = "danger";
+  lastAlertAt = performance.now();
+  applyVisualAlert("danger");
+  await playBeepPattern(ALERT_PROFILES.danger.beepPattern, ALERT_PROFILES.danger.beepFrequency);
+  vibratePattern(ALERT_PROFILES.danger.vibrationPattern);
 }
 
 function renderLoop(now: number): void {
   if (!running) return;
 
   updateFpsAndPower(now);
+
+  if (!imageTestMode) {
+    drawCameraPreviewSource();
+  }
 
   frameCount += 1;
   if (frameCount % (lowPowerMode ? LOW_POWER_INFER_EVERY_N_FRAMES : NORMAL_INFER_EVERY_N_FRAMES) === 0) {
@@ -1528,13 +1828,10 @@ function renderLoop(now: number): void {
 
   updateCoverageMetrics();
   syncRiskState(now);
-  renderOverlayFrame(
-    imageTestMode ? imageTestCanvasEl.width || ROAD_SEG_INPUT_W : video.videoWidth || ROAD_SEG_INPUT_W,
-    imageTestMode ? imageTestCanvasEl.height || ROAD_SEG_INPUT_H : video.videoHeight || ROAD_SEG_INPUT_H,
-  );
+  renderOverlayFrame(ROAD_SEG_INPUT_W, ROAD_SEG_INPUT_H);
   updateRiskUi();
   updateCommonUi();
-  maybeSpeakRisk(now);
+  maybeTriggerAlert(now);
 
   rafId = window.requestAnimationFrame(renderLoop);
 }
@@ -1563,6 +1860,14 @@ imageTestRun?.addEventListener("click", () => {
 
 cameraModeButtonEl.addEventListener("click", () => {
   setCameraMode();
+});
+
+enableAlertsButton?.addEventListener("click", () => {
+  enableAlerts();
+});
+
+testDangerAlertButton?.addEventListener("click", () => {
+  void testDangerAlert();
 });
 
 stopButton.addEventListener("click", () => {

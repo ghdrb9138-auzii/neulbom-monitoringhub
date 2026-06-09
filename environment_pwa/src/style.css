@@ -73,6 +73,11 @@ button {
   color: #f8fafc;
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 28px 64px rgba(15, 23, 42, 0.18);
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
 }
 
 .stage-header {
@@ -151,13 +156,19 @@ button {
 
 .video-frame {
   position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
   overflow: hidden;
-  min-height: min(54vw, 540px);
   border-radius: 22px;
   background:
     radial-gradient(circle at 30% 20%, rgba(125, 211, 252, 0.2), transparent 36%),
     #020617;
   border: 1px solid rgba(255, 255, 255, 0.1);
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
 }
 
 .video-frame::after {
@@ -172,22 +183,27 @@ button {
 }
 
 #video,
+#camera-preview-canvas,
 #image-test-canvas,
 #overlay {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain;
 }
 
 #video {
   z-index: 0;
   background: #020617;
+  display: none;
+}
+
+#camera-preview-canvas {
+  z-index: 1;
 }
 
 #overlay {
-  z-index: 1;
+  z-index: 3;
   pointer-events: none;
 }
 
@@ -208,6 +224,163 @@ button {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.03em;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.2);
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.alert-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 9999;
+  width: min(92vw, 420px);
+  padding: 14px 16px;
+  border-radius: 18px;
+  color: #fff;
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.28);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: center;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.alert-toast strong {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.alert-toast span {
+  font-size: 13px;
+  line-height: 1.5;
+  opacity: 0.92;
+}
+
+.alert-toast.hidden {
+  display: none;
+}
+
+.toast-unknown {
+  background: rgba(51, 65, 85, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.toast-safe {
+  background: rgba(22, 101, 52, 0.86);
+  border: 1px solid rgba(134, 239, 172, 0.34);
+}
+
+.toast-crosswalk {
+  background: rgba(30, 64, 175, 0.86);
+  border: 1px solid rgba(191, 219, 254, 0.38);
+}
+
+.toast-warn {
+  background: rgba(194, 65, 12, 0.88);
+  border: 1px solid rgba(254, 215, 170, 0.42);
+}
+
+.toast-danger {
+  background: rgba(153, 27, 27, 0.92);
+  border: 1px solid rgba(254, 202, 202, 0.46);
+  animation: toast-danger-pulse 1s ease-in-out infinite;
+}
+
+@keyframes toast-danger-pulse {
+  0%,
+  100% {
+    transform: translateX(-50%) scale(1);
+  }
+
+  50% {
+    transform: translateX(-50%) scale(1.01);
+  }
+}
+
+.risk-safe {
+  background:
+    radial-gradient(circle at top left, rgba(74, 222, 128, 0.18), transparent 34%),
+    rgba(15, 23, 42, 0.92);
+  border-color: rgba(74, 222, 128, 0.38);
+  box-shadow:
+    0 28px 64px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(74, 222, 128, 0.08) inset;
+}
+
+.risk-safe .overlay-badge {
+  background: rgba(20, 83, 45, 0.72);
+  border-color: rgba(134, 239, 172, 0.36);
+  color: #dcfce7;
+}
+
+.risk-crosswalk {
+  background:
+    radial-gradient(circle at top left, rgba(96, 165, 250, 0.2), transparent 34%),
+    rgba(15, 23, 42, 0.92);
+  border-color: rgba(96, 165, 250, 0.42);
+  box-shadow:
+    0 28px 64px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(96, 165, 250, 0.1) inset;
+}
+
+.risk-crosswalk .overlay-badge {
+  background: rgba(30, 64, 175, 0.72);
+  border-color: rgba(191, 219, 254, 0.4);
+  color: #dbeafe;
+}
+
+.risk-warn {
+  background:
+    radial-gradient(circle at top left, rgba(250, 204, 21, 0.2), transparent 34%),
+    rgba(15, 23, 42, 0.92);
+  border-color: rgba(250, 204, 21, 0.42);
+  box-shadow:
+    0 28px 64px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(250, 204, 21, 0.1) inset;
+}
+
+.risk-warn .overlay-badge {
+  background: rgba(133, 77, 14, 0.72);
+  border-color: rgba(254, 240, 138, 0.42);
+  color: #fef3c7;
+}
+
+.risk-danger {
+  background:
+    radial-gradient(circle at top left, rgba(248, 113, 113, 0.22), transparent 34%),
+    rgba(15, 23, 42, 0.92);
+  border-color: rgba(248, 113, 113, 0.52);
+  box-shadow:
+    0 28px 64px rgba(15, 23, 42, 0.18),
+    0 0 0 1px rgba(248, 113, 113, 0.14) inset,
+    0 0 40px rgba(248, 113, 113, 0.24);
+  animation: danger-pulse 1s ease-in-out infinite;
+}
+
+.risk-danger .overlay-badge {
+  background: rgba(127, 29, 29, 0.78);
+  border-color: rgba(254, 202, 202, 0.45);
+  color: #fee2e2;
+}
+
+@keyframes danger-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.008);
+  }
 }
 
 .error-banner {
@@ -368,7 +541,6 @@ button {
   }
 
   .video-frame {
-    min-height: 66vh;
     border-radius: 18px;
   }
 
