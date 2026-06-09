@@ -104,20 +104,21 @@ const FAR_ZONE: Zone = {
   yMax: 0.50,
 };
 
-const DANGER_HOLD_MS = 1500;
-const WARN_HOLD_MS = 900;
+const DANGER_HOLD_MS = 2500;
+const WARN_HOLD_MS = 1800;
+const CROSSWALK_HOLD_MS = 1800;
 const LOW_POWER_ENTER_FPS = 12;
 const LOW_POWER_EXIT_FPS = 16;
-const NORMAL_INFER_EVERY_N_FRAMES = 2;
-const LOW_POWER_INFER_EVERY_N_FRAMES = 3;
 const PREVIEW_FPS = 15;
 const PREVIEW_INTERVAL_MS = 1000 / PREVIEW_FPS;
 const COVERAGE_EMA_ALPHA = 0.35;
 const DEBUG_SEGMENT_MASK = false;
+const DEBUG_MODEL_FETCH = false;
 const COMMON_UI_INTERVAL_MS = 500;
 const DANGER_HEARTBEAT_MS = 3000;
 const WARN_HEARTBEAT_MS = 7000;
 const SPEECH_MIN_INTERVAL_MS = 2500;
+const SEG_INPUT_SIZE_LOW_POWER = 320;
 const WARN_CONFIRM_STREAK = 2;
 const CROSSWALK_CONFIRM_STREAK = 2;
 const DANGER_CONFIRM_STREAK = 2;
@@ -140,6 +141,10 @@ const RISK_VOTE_WINDOW = 4;
 function getActiveSegInputSize(): number {
   if (imageTestMode) {
     return SEG_INPUT_SIZE_NORMAL;
+  }
+
+  if (lowPowerMode) {
+    return SEG_INPUT_SIZE_LOW_POWER;
   }
 
   return USE_FAST_CAMERA_SEGMENTATION ? SEG_INPUT_SIZE_FAST : SEG_INPUT_SIZE_NORMAL;
@@ -243,7 +248,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
 
   const response = await originalFetch(input, init);
 
-  if (url.includes("/models/") || url.includes("segformer")) {
+  if (DEBUG_MODEL_FETCH && (url.includes("/models/") || url.includes("segformer"))) {
     const contentType = response.headers.get("content-type") ?? "";
     console.info("[model fetch]", response.status, contentType, url);
 
@@ -445,7 +450,6 @@ let stream: MediaStream | null = null;
 let running = false;
 let rafId = 0;
 let resizeObserver: ResizeObserver | null = null;
-let frameCount = 0;
 let lastFrameAt = 0;
 let fps = 0;
 let lowPowerMode = false;
@@ -489,6 +493,7 @@ let nearCurbCoverageKnown = false;
 let lookaheadCurbCoverageKnown = false;
 
 let rawRiskState: RiskState = "unknown";
+let votedRiskState: RiskState = "unknown";
 let currentRiskState: RiskState = "unknown";
 let lastRawRiskState: RiskState = "unknown";
 let rawRiskStreak = 0;
@@ -503,7 +508,9 @@ let alertsEnabled = false;
 let lastAlertAt = 0;
 let lastAlertState: RiskState = "unknown";
 let lastHeartbeatAlertAt = 0;
+let lastInferenceMs = 0;
 let lastSegAt = 0;
+let lastCameraSegAttemptAt = 0;
 let lastPreviewDrawAt = 0;
 let lastCommonUiAt = 0;
 let lastSpokenText = "";
@@ -740,6 +747,10 @@ function updateSegUi(): void {
 function updateRiskUi(): void {
   const riskText = getRiskBadgeText(currentRiskState);
   const labelsText = detectedLabels.length > 0 ? detectedLabels.join(", ") : "none";
+  const activeSegSize = getActiveSegInputSize();
+  const activeSegInterval = imageTestMode
+    ? "manual"
+    : `${lowPowerMode ? ROAD_SEG_SLOW_INTERVAL_MS : ROAD_SEG_INTERVAL_MS}ms`;
   const nearSidewalkText = `${getCoverageText(nearSidewalkCoverageKnown ? nearSidewalkCoverage : null)}`;
   const nearRoadText = `${getCoverageText(nearRoadCoverageKnown ? nearRoadCoverage : null)}`;
   const nearCrosswalkText = `${getCoverageText(nearCrosswalkCoverageKnown ? nearCrosswalkCoverage : null)}`;
@@ -752,7 +763,13 @@ function updateRiskUi(): void {
   riskStateEl.dataset.rawState = rawRiskState;
   riskLabel.textContent = riskText;
   riskNote.textContent = [
-    `detected labels=${labelsText}`,
+    `mode=${imageTestMode ? "image" : "camera"}`,
+    `input=${activeSegSize}x${activeSegSize}`,
+    `seg=${activeSegInterval}`,
+    `inference=${lastInferenceMs > 0 ? `${Math.round(lastInferenceMs)}ms` : "--"}`,
+    `raw=${rawRiskState}`,
+    `voted=${votedRiskState}`,
+    `current=${currentRiskState}`,
     `near sidewalk ${nearSidewalkText}`,
     `near road ${nearRoadText}`,
     `near crosswalk ${nearCrosswalkText}`,
@@ -761,8 +778,7 @@ function updateRiskUi(): void {
     `lookahead crosswalk ${lookaheadCrosswalkText}`,
     `near curb ${nearCurbText}`,
     `lookahead curb ${lookaheadCurbText}`,
-    `raw risk=${rawRiskState}`,
-    `current risk=${currentRiskState}`,
+    `labels=${labelsText}`,
   ].join(" · ");
 
   setPillText(
@@ -834,14 +850,15 @@ function updateCommonUi(): void {
 
 function setStoppedState(): void {
   cameraLabel.textContent = "대기";
-  frameCount = 0;
   lastFrameAt = 0;
   fps = 0;
   rawRiskState = "unknown";
+  votedRiskState = "unknown";
   currentRiskState = "unknown";
   lastRawRiskState = "unknown";
   rawRiskStreak = 0;
   riskHoldUntil = 0;
+  lastInferenceMs = 0;
   roadMask = null;
   sidewalkMask = null;
   crosswalkMask = null;
@@ -1308,10 +1325,26 @@ function isHardDanger(): boolean {
   );
 }
 
+function getGroundCoverageTotal(): number {
+  return (
+    (nearSidewalkCoverageKnown ? nearSidewalkCoverage : 0) +
+    (nearRoadCoverageKnown ? nearRoadCoverage : 0) +
+    (nearCrosswalkCoverageKnown ? nearCrosswalkCoverage : 0) +
+    (nearCurbCoverageKnown ? nearCurbCoverage : 0)
+  );
+}
+
 function syncRiskState(now: number): void {
+  if (!imageTestMode && getGroundCoverageTotal() < 0.18) {
+    rawRiskState = "unknown";
+    votedRiskState = currentRiskState;
+    return;
+  }
+
   const nextRaw = deriveRawRiskState();
   const votedRaw = imageTestMode ? nextRaw : pushRiskVote(nextRaw);
-  rawRiskState = votedRaw;
+  rawRiskState = nextRaw;
+  votedRiskState = votedRaw;
 
   if (imageTestMode) {
     currentRiskState = votedRaw;
@@ -1339,6 +1372,12 @@ function syncRiskState(now: number): void {
   }
 
   if (votedRaw === "crosswalk" && rawRiskStreak < CROSSWALK_CONFIRM_STREAK) {
+    return;
+  }
+
+  if (votedRaw === "crosswalk") {
+    currentRiskState = "crosswalk";
+    riskHoldUntil = now + CROSSWALK_HOLD_MS;
     return;
   }
 
@@ -1642,6 +1681,21 @@ async function runRoadSegmentation(): Promise<void> {
   await runRoadSegmentationFromSource(cameraPreviewCanvasEl);
 }
 
+function maybeRunCameraSegmentation(now: number): void {
+  if (imageTestMode) return;
+  if (!running) return;
+  if (roadSegState !== "ready") return;
+  if (roadSegInFlight || roadSegBusy) return;
+  if (!cameraPreviewCanvasEl.width || !cameraPreviewCanvasEl.height) return;
+
+  const interval = lowPowerMode ? ROAD_SEG_SLOW_INTERVAL_MS : ROAD_SEG_INTERVAL_MS;
+
+  if (now - lastCameraSegAttemptAt < interval) return;
+
+  lastCameraSegAttemptAt = now;
+  void runRoadSegmentation();
+}
+
 async function runRoadSegmentationFromSource(
   source: HTMLCanvasElement | OffscreenCanvas,
 ): Promise<void> {
@@ -1664,7 +1718,9 @@ async function runRoadSegmentationFromSource(
   try {
     lastSegAt = now;
     const rawImage = RawImage.fromCanvas(source);
+    const inferenceStart = performance.now();
     const result = await segmenter(rawImage);
+    lastInferenceMs = performance.now() - inferenceStart;
     const segments = Array.isArray(result)
       ? (result as RawSegmentLike[])
       : [result as RawSegmentLike];
@@ -1865,15 +1921,12 @@ async function start(): Promise<void> {
 
     running = true;
     imageTestMode = false;
-    frameCount = 0;
     lastFrameAt = 0;
     fps = 0;
     lowPowerMode = false;
-    roadSegState = "idle";
     roadSegErrorMessage = "";
     roadSegBusy = false;
     roadSegInFlight = false;
-    segmenter = null;
     roadMask = null;
     sidewalkMask = null;
     crosswalkMask = null;
@@ -1896,6 +1949,7 @@ async function start(): Promise<void> {
     lookaheadRoadCoverage = 0;
     farRoadCoverage = 0;
     rawRiskState = "unknown";
+    votedRiskState = "unknown";
     currentRiskState = "unknown";
     lastRawRiskState = "unknown";
     rawRiskStreak = 0;
@@ -1909,6 +1963,8 @@ async function start(): Promise<void> {
     lastAlertState = "unknown";
     lastPreviewDrawAt = 0;
     lastCommonUiAt = 0;
+    lastInferenceMs = 0;
+    lastCameraSegAttemptAt = 0;
 
     const activeSize = getActiveSegInputSize();
     cameraPreviewCanvasEl.width = activeSize;
@@ -1920,6 +1976,7 @@ async function start(): Promise<void> {
     updateRiskUi();
     updatePowerUi();
     updateCommonUi();
+    document.body.classList.add("live-mode");
 
     syncCanvasSize();
     if (typeof ResizeObserver !== "undefined") {
@@ -1927,7 +1984,10 @@ async function start(): Promise<void> {
       resizeObserver.observe(video);
     }
 
-    void ensureRoadSegLoad();
+    if (!segmenter || roadSegState !== "ready") {
+      roadSegState = "idle";
+      void ensureRoadSegLoad();
+    }
     rafId = window.requestAnimationFrame(renderLoop);
   } catch (error) {
     console.error("카메라 시작 실패", error);
@@ -1951,11 +2011,15 @@ function stop(): void {
     window.speechSynthesis.cancel();
   }
 
-  alertsEnabled = false;
+  document.body.classList.remove("live-mode");
+
   lastAlertAt = 0;
   lastAlertState = "unknown";
   lastAlertProcessedState = "unknown";
   lastHeartbeatAlertAt = 0;
+  lastInferenceMs = 0;
+  votedRiskState = "unknown";
+  lastCameraSegAttemptAt = 0;
   lastSpokenText = "";
   lastSpeechAt = 0;
   segmentationRevision = 0;
@@ -1979,22 +2043,6 @@ function stop(): void {
   cameraPreviewCanvasEl.classList.add("hidden");
   roadSegBusy = false;
   roadSegInFlight = false;
-  roadMask = null;
-  sidewalkMask = null;
-  crosswalkMask = null;
-  curbMask = null;
-  roadMaskCanvas = null;
-  sidewalkMaskCanvas = null;
-  crosswalkMaskCanvas = null;
-  curbMaskCanvas = null;
-  nearCrosswalkCoverageKnown = false;
-  lookaheadCrosswalkCoverageKnown = false;
-  nearCrosswalkCoverage = 0;
-  lookaheadCrosswalkCoverage = 0;
-  nearCurbCoverageKnown = false;
-  lookaheadCurbCoverageKnown = false;
-  nearCurbCoverage = 0;
-  lookaheadCurbCoverage = 0;
   setStoppedState();
 }
 
@@ -2029,14 +2077,11 @@ function renderLoop(now: number): void {
     drawCameraPreviewSource();
   }
 
-  frameCount += 1;
-  if (frameCount % (lowPowerMode ? LOW_POWER_INFER_EVERY_N_FRAMES : NORMAL_INFER_EVERY_N_FRAMES) === 0) {
-    void runRoadSegmentation();
-  }
-
   if (roadSegState === "idle") {
     void ensureRoadSegLoad();
   }
+
+  maybeRunCameraSegmentation(now);
 
   const hasNewSegmentation = segmentationRevision !== lastRiskProcessedRevision;
 
@@ -2052,9 +2097,9 @@ function renderLoop(now: number): void {
     }
 
     updateRiskUi();
-    maybeTriggerAlert(now);
   }
 
+  maybeTriggerAlertHeartbeat(now);
   updateCommonUiThrottled(now);
 
   rafId = window.requestAnimationFrame(renderLoop);

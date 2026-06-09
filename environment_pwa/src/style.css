@@ -295,6 +295,25 @@ button {
   animation: toast-danger-pulse 1s ease-in-out infinite;
 }
 
+body.live-mode .video-frame,
+body.live-mode .overlay-badge,
+body.live-mode .alert-toast {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+body.live-mode .risk-danger {
+  animation: none;
+}
+
+body.live-mode .toast-danger {
+  animation: none;
+}
+
+body.live-mode .video-frame {
+  box-shadow: none;
+}
+
 @keyframes toast-danger-pulse {
   0%,
   100% {
