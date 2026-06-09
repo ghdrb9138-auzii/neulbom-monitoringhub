@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5176",
     "tunnel": "\"C:\\Users\\User\\AppData\\Local\\Microsoft\\WinGet\\Links\\cloudflared.exe\" tunnel --url http://localhost:5176",
-    "dev:tunnel": "concurrently \"npm run dev\" \"npm run tunnel\""
+    "dev:tunnel": "concurrently \"npm run dev\" \"npm run tunnel\"",
+    "build": "tsc && vite build"
   },
   "devDependencies": {
     "concurrently": "^10.0.3",
