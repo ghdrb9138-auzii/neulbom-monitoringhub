@@ -58,10 +58,13 @@ const ROAD_SEG_LOCAL_MODEL_DIR = `${base}models/segformer-sidewalk`;
 const ROAD_SEG_CONFIG_URL = `${base}models/segformer-sidewalk/config.json`;
 const ROAD_SEG_PREPROCESSOR_URL = `${base}models/segformer-sidewalk/preprocessor_config.json`;
 const ROAD_SEG_ONNX_URL = `${base}models/segformer-sidewalk/onnx/model.onnx`;
-const ROAD_SEG_INPUT_W = 512;
-const ROAD_SEG_INPUT_H = 512;
-const ROAD_SEG_INTERVAL_MS = 900;
-const ROAD_SEG_SLOW_INTERVAL_MS = 1400;
+const SEG_INPUT_SIZE_NORMAL = 512;
+const SEG_INPUT_SIZE_FAST = 384;
+const USE_FAST_CAMERA_SEGMENTATION = true;
+const ROAD_SEG_INPUT_W = SEG_INPUT_SIZE_NORMAL;
+const ROAD_SEG_INPUT_H = SEG_INPUT_SIZE_NORMAL;
+const ROAD_SEG_INTERVAL_MS = 1300;
+const ROAD_SEG_SLOW_INTERVAL_MS = 2000;
 const ROAD_DANGER_LABELS = new Set([
   "flat-road",
   "flat-cyclinglane",
@@ -107,23 +110,40 @@ const LOW_POWER_ENTER_FPS = 12;
 const LOW_POWER_EXIT_FPS = 16;
 const NORMAL_INFER_EVERY_N_FRAMES = 2;
 const LOW_POWER_INFER_EVERY_N_FRAMES = 3;
+const PREVIEW_FPS = 15;
+const PREVIEW_INTERVAL_MS = 1000 / PREVIEW_FPS;
 const COVERAGE_EMA_ALPHA = 0.35;
 const DEBUG_SEGMENT_MASK = false;
-const GLOBAL_ALERT_COOLDOWN_MS = 3000;
-const DANGER_GLOBAL_ALERT_COOLDOWN_MS = 1800;
+const COMMON_UI_INTERVAL_MS = 500;
+const DANGER_HEARTBEAT_MS = 3000;
+const WARN_HEARTBEAT_MS = 7000;
+const SPEECH_MIN_INTERVAL_MS = 2500;
 const WARN_CONFIRM_STREAK = 2;
 const CROSSWALK_CONFIRM_STREAK = 2;
 const DANGER_CONFIRM_STREAK = 2;
 const HARD_NEAR_ROAD_DANGER = 0.65;
 const HARD_LOOKAHEAD_ROAD_DANGER = 0.70;
 const ON_SIDEWALK_MIN = 0.35;
-const NEAR_ROAD_DANGER = 0.45;
-const LOOKAHEAD_ROAD_WARN = 0.28;
 const LOOKAHEAD_ROAD_DANGER = 0.50;
 const LOOKAHEAD_CURB_WARN = 0.06;
 const NEAR_CURB_WARN = 0.10;
-const NEAR_CROSSWALK_MIN = 0.22;
-const LOOKAHEAD_CROSSWALK_MIN = 0.20;
+const WARN_ENTER_LOOKAHEAD_ROAD = 0.30;
+const WARN_EXIT_LOOKAHEAD_ROAD = 0.20;
+const DANGER_ENTER_NEAR_ROAD = 0.48;
+const DANGER_EXIT_NEAR_ROAD = 0.34;
+const CROSSWALK_ENTER = 0.22;
+const CROSSWALK_EXIT = 0.14;
+const RISK_VOTE_WINDOW = 4;
+
+// If the local SegFormer model fails with 384x384 on a device, set SEG_INPUT_SIZE_FAST back to 512
+// and revert public/models/segformer-sidewalk/preprocessor_config.json to 512x512.
+function getActiveSegInputSize(): number {
+  if (imageTestMode) {
+    return SEG_INPUT_SIZE_NORMAL;
+  }
+
+  return USE_FAST_CAMERA_SEGMENTATION ? SEG_INPUT_SIZE_FAST : SEG_INPUT_SIZE_NORMAL;
+}
 
 const ALERT_PROFILES: Record<RiskState, AlertProfile> = {
   unknown: {
@@ -472,16 +492,22 @@ let rawRiskState: RiskState = "unknown";
 let currentRiskState: RiskState = "unknown";
 let lastRawRiskState: RiskState = "unknown";
 let rawRiskStreak = 0;
+let riskVoteHistory: RiskState[] = [];
 let riskHoldUntil = 0;
 let segmentationRevision = 0;
 let lastRiskProcessedRevision = -1;
+let lastOverlayDrawRevision = -1;
 let lastAlertProcessedState: RiskState = "unknown";
 let audioContext: AudioContext | null = null;
 let alertsEnabled = false;
-let lastAnyAlertAt = 0;
 let lastAlertAt = 0;
 let lastAlertState: RiskState = "unknown";
+let lastHeartbeatAlertAt = 0;
 let lastSegAt = 0;
+let lastPreviewDrawAt = 0;
+let lastCommonUiAt = 0;
+let lastSpokenText = "";
+let lastSpeechAt = 0;
 
 function setPillText(
   el: HTMLSpanElement,
@@ -534,6 +560,35 @@ function getRiskSeverity(state: RiskState): number {
     default:
       return 0;
   }
+}
+
+function pushRiskVote(nextRiskState: RiskState): RiskState {
+  riskVoteHistory.push(nextRiskState);
+  if (riskVoteHistory.length > RISK_VOTE_WINDOW) {
+    riskVoteHistory.shift();
+  }
+
+  const voteCounts = new Map<RiskState, number>();
+  for (const vote of riskVoteHistory) {
+    voteCounts.set(vote, (voteCounts.get(vote) ?? 0) + 1);
+  }
+
+  let majorityState: RiskState = nextRiskState;
+  let majorityCount = 0;
+
+  for (const [state, count] of voteCounts) {
+    if (count > majorityCount) {
+      majorityState = state;
+      majorityCount = count;
+    }
+  }
+
+  const majorityThreshold = Math.floor(riskVoteHistory.length / 2) + 1;
+  if (majorityCount >= majorityThreshold) {
+    return majorityState;
+  }
+
+  return currentRiskState;
 }
 
 function smoothCoverage(prev: number, next: number): number {
@@ -721,6 +776,13 @@ function updateRiskUi(): void {
   );
 
   applyVisualAlert(currentRiskState);
+}
+
+function updateCommonUiThrottled(now: number): void {
+  if (now - lastCommonUiAt < COMMON_UI_INTERVAL_MS) return;
+
+  lastCommonUiAt = now;
+  updateCommonUi();
 }
 
 function applyVisualAlert(state: RiskState): void {
@@ -1133,10 +1195,42 @@ function deriveRawRiskState(): RiskState {
     return "unknown";
   }
 
+  if (currentRiskState === "danger") {
+    if (isHardDanger()) {
+      return "danger";
+    }
+
+    if (
+      (nearRoad !== null && nearRoad >= DANGER_EXIT_NEAR_ROAD) ||
+      (lookaheadRoad !== null && lookaheadRoad >= LOOKAHEAD_ROAD_DANGER)
+    ) {
+      return "danger";
+    }
+  }
+
+  if (currentRiskState === "crosswalk") {
+    if (
+      (nearCrosswalk !== null && nearCrosswalk >= CROSSWALK_EXIT) ||
+      (lookaheadCrosswalk !== null && lookaheadCrosswalk >= CROSSWALK_EXIT)
+    ) {
+      return "crosswalk";
+    }
+  }
+
+  if (currentRiskState === "warn") {
+    if (
+      (lookaheadRoad !== null && lookaheadRoad >= WARN_EXIT_LOOKAHEAD_ROAD) ||
+      (nearCurb !== null && nearCurb >= NEAR_CURB_WARN) ||
+      (lookaheadCurb !== null && lookaheadCurb >= LOOKAHEAD_CURB_WARN)
+    ) {
+      return "warn";
+    }
+  }
+
   if (
     nearRoad !== null &&
-    nearRoad >= NEAR_ROAD_DANGER &&
-    (nearCrosswalk === null || nearCrosswalk < NEAR_CROSSWALK_MIN)
+    nearRoad >= DANGER_ENTER_NEAR_ROAD &&
+    (nearCrosswalk === null || nearCrosswalk < CROSSWALK_ENTER)
   ) {
     return "danger";
   }
@@ -1144,18 +1238,18 @@ function deriveRawRiskState(): RiskState {
   if (
     lookaheadRoad !== null &&
     lookaheadRoad >= LOOKAHEAD_ROAD_DANGER &&
-    (lookaheadCrosswalk === null || lookaheadCrosswalk < LOOKAHEAD_CROSSWALK_MIN)
+    (lookaheadCrosswalk === null || lookaheadCrosswalk < CROSSWALK_ENTER)
   ) {
     return "danger";
   }
 
-  if (nearCrosswalk !== null && nearCrosswalk >= NEAR_CROSSWALK_MIN) {
+  if (nearCrosswalk !== null && nearCrosswalk >= CROSSWALK_ENTER) {
     return "crosswalk";
   }
 
   if (
     lookaheadCrosswalk !== null &&
-    lookaheadCrosswalk >= LOOKAHEAD_CROSSWALK_MIN &&
+    lookaheadCrosswalk >= CROSSWALK_ENTER &&
     (lookaheadRoad === null || lookaheadRoad < LOOKAHEAD_ROAD_DANGER)
   ) {
     return "crosswalk";
@@ -1163,7 +1257,7 @@ function deriveRawRiskState(): RiskState {
 
   if (
     lookaheadRoad !== null &&
-    lookaheadRoad >= LOOKAHEAD_ROAD_WARN
+    lookaheadRoad >= WARN_ENTER_LOOKAHEAD_ROAD
   ) {
     return "warn";
   }
@@ -1195,17 +1289,16 @@ function deriveRawRiskState(): RiskState {
     nearSidewalk !== null &&
     nearSidewalk >= ON_SIDEWALK_MIN &&
     nearRoad !== null &&
-    nearRoad < NEAR_ROAD_DANGER &&
+    nearRoad < DANGER_ENTER_NEAR_ROAD &&
     lookaheadRoad !== null &&
-    lookaheadRoad < LOOKAHEAD_ROAD_WARN
-    &&
-    (nearCrosswalk === null || nearCrosswalk < NEAR_CROSSWALK_MIN) &&
-    (lookaheadCrosswalk === null || lookaheadCrosswalk < LOOKAHEAD_CROSSWALK_MIN)
+    lookaheadRoad < WARN_EXIT_LOOKAHEAD_ROAD &&
+    (nearCrosswalk === null || nearCrosswalk < CROSSWALK_EXIT) &&
+    (lookaheadCrosswalk === null || lookaheadCrosswalk < CROSSWALK_EXIT)
   ) {
     return "safe";
   }
 
-  return "warn";
+  return currentRiskState;
 }
 
 function isHardDanger(): boolean {
@@ -1217,24 +1310,25 @@ function isHardDanger(): boolean {
 
 function syncRiskState(now: number): void {
   const nextRaw = deriveRawRiskState();
-  rawRiskState = nextRaw;
+  const votedRaw = imageTestMode ? nextRaw : pushRiskVote(nextRaw);
+  rawRiskState = votedRaw;
 
   if (imageTestMode) {
-    currentRiskState = nextRaw;
-    lastRawRiskState = nextRaw;
+    currentRiskState = votedRaw;
+    lastRawRiskState = votedRaw;
     rawRiskStreak = 1;
     riskHoldUntil = 0;
     return;
   }
 
-  if (nextRaw === lastRawRiskState) {
+  if (votedRaw === lastRawRiskState) {
     rawRiskStreak += 1;
   } else {
-    lastRawRiskState = nextRaw;
+    lastRawRiskState = votedRaw;
     rawRiskStreak = 1;
   }
 
-  if (nextRaw === "danger") {
+  if (votedRaw === "danger") {
     if (!isHardDanger() && rawRiskStreak < DANGER_CONFIRM_STREAK) {
       return;
     }
@@ -1244,15 +1338,15 @@ function syncRiskState(now: number): void {
     return;
   }
 
-  if (nextRaw === "crosswalk" && rawRiskStreak < CROSSWALK_CONFIRM_STREAK) {
+  if (votedRaw === "crosswalk" && rawRiskStreak < CROSSWALK_CONFIRM_STREAK) {
     return;
   }
 
-  if (nextRaw === "warn" && rawRiskStreak < WARN_CONFIRM_STREAK) {
+  if (votedRaw === "warn" && rawRiskStreak < WARN_CONFIRM_STREAK) {
     return;
   }
 
-  if (nextRaw === "safe") {
+  if (votedRaw === "safe") {
     if (currentRiskState === "safe") {
       riskHoldUntil = 0;
       return;
@@ -1268,9 +1362,9 @@ function syncRiskState(now: number): void {
   if (currentRiskState === "danger" && now < riskHoldUntil) return;
   if (rawRiskStreak < 2) return;
 
-  if (currentRiskState !== nextRaw) {
-    currentRiskState = nextRaw;
-    if (nextRaw === "warn") {
+  if (currentRiskState !== votedRaw) {
+    currentRiskState = votedRaw;
+    if (votedRaw === "warn") {
       riskHoldUntil = now + WARN_HOLD_MS;
     } else {
       riskHoldUntil = 0;
@@ -1280,7 +1374,14 @@ function syncRiskState(now: number): void {
 
 function speak(text: string): void {
   if (!("speechSynthesis" in window)) return;
+  const now = performance.now();
 
+  if (text === lastSpokenText && now - lastSpeechAt < SPEECH_MIN_INTERVAL_MS) {
+    return;
+  }
+
+  lastSpokenText = text;
+  lastSpeechAt = now;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.lang = "ko-KR";
@@ -1381,41 +1482,46 @@ function vibratePattern(pattern: number[]): void {
   navigator.vibrate(pattern);
 }
 
-function maybeTriggerAlert(now: number): void {
-  const profile = ALERT_PROFILES[currentRiskState];
-  if (!alertsEnabled) return;
-  if (profile.cooldownMs <= 0) return;
-
-  const severity = getRiskSeverity(currentRiskState);
-  const previousSeverity = getRiskSeverity(lastAlertProcessedState);
-
-  if (severity === 0) return;
-
-  const globalCooldownMs =
-    currentRiskState === "danger" ? DANGER_GLOBAL_ALERT_COOLDOWN_MS : GLOBAL_ALERT_COOLDOWN_MS;
-  const sameState = lastAlertState === currentRiskState || lastAlertProcessedState === currentRiskState;
-  const severityRaised = severity > previousSeverity;
-  const anyCooldownActive = now - lastAnyAlertAt < globalCooldownMs;
-
-  if (sameState && now - lastAlertAt < profile.cooldownMs) {
-    return;
-  }
-
-  if (!severityRaised && anyCooldownActive) {
-    return;
-  }
-
-  lastAlertState = currentRiskState;
-  lastAlertProcessedState = currentRiskState;
+function triggerAlertNow(profile: AlertProfile, now: number): void {
+  lastAlertState = profile.state;
+  lastAlertProcessedState = profile.state;
   lastAlertAt = now;
-  lastAnyAlertAt = now;
+  lastHeartbeatAlertAt = now;
+
+  void playBeepPattern(profile.beepPattern, profile.beepFrequency);
+  vibratePattern(profile.vibrationPattern);
 
   if (profile.ttsText) {
     speak(profile.ttsText);
   }
+}
 
-  void playBeepPattern(profile.beepPattern, profile.beepFrequency);
-  vibratePattern(profile.vibrationPattern);
+function maybeTriggerAlertHeartbeat(now: number): void {
+  if (!alertsEnabled) return;
+
+  const profile = ALERT_PROFILES[currentRiskState];
+  const severity = getRiskSeverity(currentRiskState);
+  if (severity === 0 || profile.cooldownMs <= 0) return;
+
+  const previousSeverity = getRiskSeverity(lastAlertProcessedState);
+  const stateChanged = lastAlertState !== currentRiskState;
+  const severityRaised = severity > previousSeverity;
+  const heartbeatInterval =
+    currentRiskState === "danger"
+      ? DANGER_HEARTBEAT_MS
+      : currentRiskState === "warn"
+        ? WARN_HEARTBEAT_MS
+        : profile.cooldownMs;
+  const heartbeatDue = now - lastHeartbeatAlertAt >= heartbeatInterval;
+  const profileCooldownDue = now - lastAlertAt >= profile.cooldownMs;
+
+  if (stateChanged || severityRaised || heartbeatDue || profileCooldownDue) {
+    triggerAlertNow(profile, now);
+  }
+}
+
+function maybeTriggerAlert(now: number): void {
+  maybeTriggerAlertHeartbeat(now);
 }
 
 async function assertJsonFile(url: string): Promise<void> {
@@ -1540,8 +1646,13 @@ async function runRoadSegmentationFromSource(
   source: HTMLCanvasElement | OffscreenCanvas,
 ): Promise<void> {
   const now = performance.now();
+  const activeSize = getActiveSegInputSize();
 
   if (!imageTestMode && now - lastSegAt < (lowPowerMode ? ROAD_SEG_SLOW_INTERVAL_MS : ROAD_SEG_INTERVAL_MS)) {
+    return;
+  }
+
+  if (source.width !== activeSize || source.height !== activeSize) {
     return;
   }
 
@@ -1593,10 +1704,11 @@ function updateFpsAndPower(now: number): void {
   }
 }
 
-function renderOverlayFrame(sourceWidth: number, sourceHeight: number): void {
+function renderOverlayFrame(): void {
   if (!overlayCtx) return;
   clearOverlay();
-  if (sourceWidth <= 0 || sourceHeight <= 0) return;
+  const activeSize = getActiveSegInputSize();
+  if (activeSize <= 0) return;
 
   if (roadMaskCanvas) {
     drawSemanticMask(roadMaskCanvas, roadMaskCanvas.width, roadMaskCanvas.height, "road");
@@ -1614,7 +1726,7 @@ function renderOverlayFrame(sourceWidth: number, sourceHeight: number): void {
     drawSemanticMask(curbMaskCanvas, curbMaskCanvas.width, curbMaskCanvas.height, "curb");
   }
 
-  drawZoneOverlay(sourceWidth, sourceHeight);
+  drawZoneOverlay(activeSize, activeSize);
 }
 
 function stopCameraOnlyButKeepUi(): void {
@@ -1631,11 +1743,13 @@ function drawCameraPreviewSource(): void {
   if (!cameraPreviewCtx) return;
   if (!video.videoWidth || !video.videoHeight) return;
 
-  if (cameraPreviewCanvasEl.width !== ROAD_SEG_INPUT_W) {
-    cameraPreviewCanvasEl.width = ROAD_SEG_INPUT_W;
+  const activeSize = getActiveSegInputSize();
+
+  if (cameraPreviewCanvasEl.width !== activeSize) {
+    cameraPreviewCanvasEl.width = activeSize;
   }
-  if (cameraPreviewCanvasEl.height !== ROAD_SEG_INPUT_H) {
-    cameraPreviewCanvasEl.height = ROAD_SEG_INPUT_H;
+  if (cameraPreviewCanvasEl.height !== activeSize) {
+    cameraPreviewCanvasEl.height = activeSize;
   }
 
   drawCoverBottom(
@@ -1643,8 +1757,8 @@ function drawCameraPreviewSource(): void {
     video,
     video.videoWidth,
     video.videoHeight,
-    ROAD_SEG_INPUT_W,
-    ROAD_SEG_INPUT_H,
+    activeSize,
+    activeSize,
   );
 }
 
@@ -1663,12 +1777,12 @@ function drawImageTestSource(): void {
     imageTestBitmap,
     imageTestBitmap.width,
     imageTestBitmap.height,
-    ROAD_SEG_INPUT_W,
-    ROAD_SEG_INPUT_H,
+    SEG_INPUT_SIZE_NORMAL,
+    SEG_INPUT_SIZE_NORMAL,
   );
 
-  overlay.width = ROAD_SEG_INPUT_W;
-  overlay.height = ROAD_SEG_INPUT_H;
+  overlay.width = SEG_INPUT_SIZE_NORMAL;
+  overlay.height = SEG_INPUT_SIZE_NORMAL;
 
   video.classList.add("hidden");
   cameraPreviewCanvasEl.classList.add("hidden");
@@ -1704,7 +1818,7 @@ async function runImageTestAnalysis(): Promise<void> {
 
     updateCoverageMetrics();
     syncRiskState(performance.now());
-    renderOverlayFrame(imageTestCanvasEl.width, imageTestCanvasEl.height);
+    renderOverlayFrame();
     updateRiskUi();
     applyVisualAlert(currentRiskState);
     updateCommonUi();
@@ -1785,16 +1899,20 @@ async function start(): Promise<void> {
     currentRiskState = "unknown";
     lastRawRiskState = "unknown";
     rawRiskStreak = 0;
+    riskVoteHistory = [];
     riskHoldUntil = 0;
     segmentationRevision = 0;
     lastRiskProcessedRevision = -1;
+    lastOverlayDrawRevision = -1;
     lastAlertProcessedState = "unknown";
-    lastAnyAlertAt = 0;
     lastAlertAt = 0;
     lastAlertState = "unknown";
+    lastPreviewDrawAt = 0;
+    lastCommonUiAt = 0;
 
-    cameraPreviewCanvasEl.width = ROAD_SEG_INPUT_W;
-    cameraPreviewCanvasEl.height = ROAD_SEG_INPUT_H;
+    const activeSize = getActiveSegInputSize();
+    cameraPreviewCanvasEl.width = activeSize;
+    cameraPreviewCanvasEl.height = activeSize;
     cameraPreviewCanvasEl.classList.remove("hidden");
     imageTestCanvasEl.classList.add("hidden");
 
@@ -1834,12 +1952,18 @@ function stop(): void {
   }
 
   alertsEnabled = false;
-  lastAnyAlertAt = 0;
   lastAlertAt = 0;
   lastAlertState = "unknown";
   lastAlertProcessedState = "unknown";
+  lastHeartbeatAlertAt = 0;
+  lastSpokenText = "";
+  lastSpeechAt = 0;
   segmentationRevision = 0;
   lastRiskProcessedRevision = -1;
+  lastOverlayDrawRevision = -1;
+  lastPreviewDrawAt = 0;
+  lastCommonUiAt = 0;
+  riskVoteHistory = [];
 
   if (audioContext && audioContext.state !== "closed") {
     void audioContext.close();
@@ -1874,9 +1998,11 @@ function stop(): void {
   setStoppedState();
 }
 
-function enableAlerts(): void {
+async function enableAlerts(): Promise<void> {
   alertsEnabled = true;
-  void ensureAudioContext();
+  await ensureAudioContext();
+  void playBeepPattern([90], 880);
+  vibratePattern([40]);
   primeTts();
   if (enableAlertsButton) {
     enableAlertsButton.textContent = "알림 활성화됨";
@@ -1884,9 +2010,11 @@ function enableAlerts(): void {
 }
 
 async function testDangerAlert(): Promise<void> {
-  enableAlerts();
+  await enableAlerts();
   currentRiskState = "danger";
-  lastAlertProcessedState = "warn";
+  lastAlertState = "unknown";
+  lastAlertProcessedState = "unknown";
+  lastHeartbeatAlertAt = 0;
   maybeTriggerAlert(performance.now());
   applyVisualAlert("danger");
 }
@@ -1896,7 +2024,8 @@ function renderLoop(now: number): void {
 
   updateFpsAndPower(now);
 
-  if (!imageTestMode) {
+  if (!imageTestMode && now - lastPreviewDrawAt >= PREVIEW_INTERVAL_MS) {
+    lastPreviewDrawAt = now;
     drawCameraPreviewSource();
   }
 
@@ -1909,7 +2038,6 @@ function renderLoop(now: number): void {
     void ensureRoadSegLoad();
   }
 
-  renderOverlayFrame(ROAD_SEG_INPUT_W, ROAD_SEG_INPUT_H);
   const hasNewSegmentation = segmentationRevision !== lastRiskProcessedRevision;
 
   if (hasNewSegmentation) {
@@ -1918,13 +2046,16 @@ function renderLoop(now: number): void {
 
     lastRiskProcessedRevision = segmentationRevision;
 
+    if (lastOverlayDrawRevision !== segmentationRevision) {
+      renderOverlayFrame();
+      lastOverlayDrawRevision = segmentationRevision;
+    }
+
     updateRiskUi();
     maybeTriggerAlert(now);
-  } else {
-    updateRiskUi();
   }
 
-  updateCommonUi();
+  updateCommonUiThrottled(now);
 
   rafId = window.requestAnimationFrame(renderLoop);
 }
@@ -1956,7 +2087,7 @@ cameraModeButtonEl.addEventListener("click", () => {
 });
 
 enableAlertsButton?.addEventListener("click", () => {
-  enableAlerts();
+  void enableAlerts();
 });
 
 testDangerAlertButton?.addEventListener("click", () => {

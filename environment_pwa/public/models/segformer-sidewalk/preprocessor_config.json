@@ -17,7 +17,7 @@
   "resample": 2,
   "rescale_factor": 0.00392156862745098,
   "size": {
-    "height": 512,
-    "width": 512
+    "height": 384,
+    "width": 384
   }
 }
