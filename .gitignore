@@ -49,4 +49,5 @@ secrets/
 
 # Local ML model binaries
 */public/models/**/*.onnx
+!environment_pwa/public/models/**/*.onnx
 hf_models/

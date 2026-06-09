@@ -1,4 +1,4 @@
-﻿import "./style.css";
+import "./style.css";
 import { registerSW } from "virtual:pwa-register";
 import { env, pipeline, RawImage } from "@huggingface/transformers";
 
@@ -53,10 +53,11 @@ type RawSegmentLike = {
   mask?: unknown;
 };
 
-const ROAD_SEG_LOCAL_MODEL_DIR = "/models/segformer-sidewalk";
-const ROAD_SEG_CONFIG_URL = "/models/segformer-sidewalk/config.json";
-const ROAD_SEG_PREPROCESSOR_URL = "/models/segformer-sidewalk/preprocessor_config.json";
-const ROAD_SEG_ONNX_URL = "/models/segformer-sidewalk/onnx/model.onnx";
+const base = import.meta.env.BASE_URL;
+const ROAD_SEG_LOCAL_MODEL_DIR = `${base}models/segformer-sidewalk`;
+const ROAD_SEG_CONFIG_URL = `${base}models/segformer-sidewalk/config.json`;
+const ROAD_SEG_PREPROCESSOR_URL = `${base}models/segformer-sidewalk/preprocessor_config.json`;
+const ROAD_SEG_ONNX_URL = `${base}models/segformer-sidewalk/onnx/model.onnx`;
 const ROAD_SEG_INPUT_W = 512;
 const ROAD_SEG_INPUT_H = 512;
 const ROAD_SEG_INTERVAL_MS = 900;
@@ -100,9 +101,6 @@ const FAR_ZONE: Zone = {
   yMax: 0.50,
 };
 
-const WARN_TTS_INTERVAL_MS = 4000;
-const DANGER_TTS_INTERVAL_MS = 1500;
-const CROSSWALK_TTS_INTERVAL_MS = 5000;
 const DANGER_HOLD_MS = 1500;
 const WARN_HOLD_MS = 900;
 const LOW_POWER_ENTER_FPS = 12;
@@ -110,6 +108,14 @@ const LOW_POWER_EXIT_FPS = 16;
 const NORMAL_INFER_EVERY_N_FRAMES = 2;
 const LOW_POWER_INFER_EVERY_N_FRAMES = 3;
 const COVERAGE_EMA_ALPHA = 0.35;
+const DEBUG_SEGMENT_MASK = false;
+const GLOBAL_ALERT_COOLDOWN_MS = 3000;
+const DANGER_GLOBAL_ALERT_COOLDOWN_MS = 1800;
+const WARN_CONFIRM_STREAK = 2;
+const CROSSWALK_CONFIRM_STREAK = 2;
+const DANGER_CONFIRM_STREAK = 2;
+const HARD_NEAR_ROAD_DANGER = 0.65;
+const HARD_LOOKAHEAD_ROAD_DANGER = 0.70;
 const ON_SIDEWALK_MIN = 0.35;
 const NEAR_ROAD_DANGER = 0.45;
 const LOOKAHEAD_ROAD_WARN = 0.28;
@@ -144,31 +150,31 @@ const ALERT_PROFILES: Record<RiskState, AlertProfile> = {
     state: "crosswalk",
     visualClass: "pill-neutral",
     label: "횡단보도 보행 구간",
-    beepPattern: [180, 180, 180],
+    beepPattern: [100],
     beepFrequency: 880,
-    vibrationPattern: [160, 80, 160],
+    vibrationPattern: [60],
     ttsText: "횡단보도 구간입니다. 좌우를 확인하세요.",
-    cooldownMs: CROSSWALK_TTS_INTERVAL_MS,
+    cooldownMs: 8000,
   },
   warn: {
     state: "warn",
     visualClass: "pill-warn",
     label: "도로 경계 접근 주의",
-    beepPattern: [220, 120, 220],
+    beepPattern: [120, 120, 120],
     beepFrequency: 660,
-    vibrationPattern: [220, 80, 220],
+    vibrationPattern: [90, 80, 90],
     ttsText: "전방에 도로 경계가 있습니다. 주의하세요.",
-    cooldownMs: WARN_TTS_INTERVAL_MS,
+    cooldownMs: 6000,
   },
   danger: {
     state: "danger",
     visualClass: "pill-bad",
     label: "도로 진입 위험",
-    beepPattern: [120, 80, 120, 80, 120],
+    beepPattern: [160, 90, 160, 90, 160],
     beepFrequency: 1046,
-    vibrationPattern: [120, 60, 120, 60, 120],
+    vibrationPattern: [180, 90, 180, 90, 180],
     ttsText: "위험, 도로 진입이 감지되었습니다. 즉시 멈추세요.",
-    cooldownMs: DANGER_TTS_INTERVAL_MS,
+    cooldownMs: 2500,
   },
 };
 
@@ -404,7 +410,7 @@ async function clearDevServiceWorkersAndCaches(): Promise<void> {
 
 void clearDevServiceWorkersAndCaches();
 
-env.localModelPath = "/models/";
+env.localModelPath = `${import.meta.env.BASE_URL}models/`;
 env.allowLocalModels = true;
 env.allowRemoteModels = false;
 env.useBrowserCache = false;
@@ -467,8 +473,12 @@ let currentRiskState: RiskState = "unknown";
 let lastRawRiskState: RiskState = "unknown";
 let rawRiskStreak = 0;
 let riskHoldUntil = 0;
+let segmentationRevision = 0;
+let lastRiskProcessedRevision = -1;
+let lastAlertProcessedState: RiskState = "unknown";
 let audioContext: AudioContext | null = null;
 let alertsEnabled = false;
+let lastAnyAlertAt = 0;
 let lastAlertAt = 0;
 let lastAlertState: RiskState = "unknown";
 let lastSegAt = 0;
@@ -511,6 +521,19 @@ function getRiskBadgeText(state: RiskState): string {
 
 function getCoverageText(value: number | null): string {
   return value === null ? "unknown" : `${(value * 100).toFixed(1)}%`;
+}
+
+function getRiskSeverity(state: RiskState): number {
+  switch (state) {
+    case "danger":
+      return 3;
+    case "warn":
+      return 2;
+    case "crosswalk":
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 function smoothCoverage(prev: number, next: number): number {
@@ -720,6 +743,11 @@ function updateAlertToast(state: RiskState): void {
   alertToast.classList.add(profile.className);
 
   if (state === "safe") {
+    alertToast.classList.add("hidden");
+    return;
+  }
+
+  if (state === "unknown") {
     alertToast.classList.add("hidden");
     return;
   }
@@ -1012,6 +1040,7 @@ function updateSemanticMasks(segments: RawSegmentLike[]): void {
   sidewalkMaskCanvas = sidewalkMask ? buildSemanticMaskCanvas(sidewalkMask, "sidewalk") : null;
   crosswalkMaskCanvas = crosswalkMask ? buildSemanticMaskCanvas(crosswalkMask, "crosswalk") : null;
   curbMaskCanvas = curbMask ? buildSemanticMaskCanvas(curbMask, "curb") : null;
+  segmentationRevision += 1;
 }
 
 function calculateMaskCoverage(mask: SemanticMask | null, zone: Zone): number | null {
@@ -1179,6 +1208,13 @@ function deriveRawRiskState(): RiskState {
   return "warn";
 }
 
+function isHardDanger(): boolean {
+  return (
+    (nearRoadCoverageKnown && nearRoadCoverage >= HARD_NEAR_ROAD_DANGER) ||
+    (lookaheadRoadCoverageKnown && lookaheadRoadCoverage >= HARD_LOOKAHEAD_ROAD_DANGER)
+  );
+}
+
 function syncRiskState(now: number): void {
   const nextRaw = deriveRawRiskState();
   rawRiskState = nextRaw;
@@ -1199,8 +1235,20 @@ function syncRiskState(now: number): void {
   }
 
   if (nextRaw === "danger") {
+    if (!isHardDanger() && rawRiskStreak < DANGER_CONFIRM_STREAK) {
+      return;
+    }
+
     currentRiskState = "danger";
     riskHoldUntil = now + DANGER_HOLD_MS;
+    return;
+  }
+
+  if (nextRaw === "crosswalk" && rawRiskStreak < CROSSWALK_CONFIRM_STREAK) {
+    return;
+  }
+
+  if (nextRaw === "warn" && rawRiskStreak < WARN_CONFIRM_STREAK) {
     return;
   }
 
@@ -1338,12 +1386,29 @@ function maybeTriggerAlert(now: number): void {
   if (!alertsEnabled) return;
   if (profile.cooldownMs <= 0) return;
 
-  if (lastAlertState === currentRiskState && now - lastAlertAt < profile.cooldownMs) {
+  const severity = getRiskSeverity(currentRiskState);
+  const previousSeverity = getRiskSeverity(lastAlertProcessedState);
+
+  if (severity === 0) return;
+
+  const globalCooldownMs =
+    currentRiskState === "danger" ? DANGER_GLOBAL_ALERT_COOLDOWN_MS : GLOBAL_ALERT_COOLDOWN_MS;
+  const sameState = lastAlertState === currentRiskState || lastAlertProcessedState === currentRiskState;
+  const severityRaised = severity > previousSeverity;
+  const anyCooldownActive = now - lastAnyAlertAt < globalCooldownMs;
+
+  if (sameState && now - lastAlertAt < profile.cooldownMs) {
+    return;
+  }
+
+  if (!severityRaised && anyCooldownActive) {
     return;
   }
 
   lastAlertState = currentRiskState;
+  lastAlertProcessedState = currentRiskState;
   lastAlertAt = now;
+  lastAnyAlertAt = now;
 
   if (profile.ttsText) {
     speak(profile.ttsText);
@@ -1492,7 +1557,9 @@ async function runRoadSegmentationFromSource(
     const segments = Array.isArray(result)
       ? (result as RawSegmentLike[])
       : [result as RawSegmentLike];
-    logSegmentMaskDetails(segments);
+    if (DEBUG_SEGMENT_MASK) {
+      logSegmentMaskDetails(segments);
+    }
     updateSemanticMasks(segments);
   } catch (error) {
     roadSegState = "error";
@@ -1564,8 +1631,12 @@ function drawCameraPreviewSource(): void {
   if (!cameraPreviewCtx) return;
   if (!video.videoWidth || !video.videoHeight) return;
 
-  cameraPreviewCanvasEl.width = ROAD_SEG_INPUT_W;
-  cameraPreviewCanvasEl.height = ROAD_SEG_INPUT_H;
+  if (cameraPreviewCanvasEl.width !== ROAD_SEG_INPUT_W) {
+    cameraPreviewCanvasEl.width = ROAD_SEG_INPUT_W;
+  }
+  if (cameraPreviewCanvasEl.height !== ROAD_SEG_INPUT_H) {
+    cameraPreviewCanvasEl.height = ROAD_SEG_INPUT_H;
+  }
 
   drawCoverBottom(
     cameraPreviewCtx,
@@ -1580,8 +1651,12 @@ function drawCameraPreviewSource(): void {
 function drawImageTestSource(): void {
   if (!imageTestBitmap || !imageTestCtx) return;
 
-  imageTestCanvasEl.width = ROAD_SEG_INPUT_W;
-  imageTestCanvasEl.height = ROAD_SEG_INPUT_H;
+  if (imageTestCanvasEl.width !== ROAD_SEG_INPUT_W) {
+    imageTestCanvasEl.width = ROAD_SEG_INPUT_W;
+  }
+  if (imageTestCanvasEl.height !== ROAD_SEG_INPUT_H) {
+    imageTestCanvasEl.height = ROAD_SEG_INPUT_H;
+  }
 
   drawCoverBottom(
     imageTestCtx,
@@ -1664,8 +1739,9 @@ async function start(): Promise<void> {
     stream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: "environment" },
-        width: { ideal: 960 },
-        height: { ideal: 540 },
+        width: { ideal: 640 },
+        height: { ideal: 640 },
+        frameRate: { ideal: 15, max: 24 },
       },
       audio: false,
     });
@@ -1710,6 +1786,10 @@ async function start(): Promise<void> {
     lastRawRiskState = "unknown";
     rawRiskStreak = 0;
     riskHoldUntil = 0;
+    segmentationRevision = 0;
+    lastRiskProcessedRevision = -1;
+    lastAlertProcessedState = "unknown";
+    lastAnyAlertAt = 0;
     lastAlertAt = 0;
     lastAlertState = "unknown";
 
@@ -1754,8 +1834,12 @@ function stop(): void {
   }
 
   alertsEnabled = false;
+  lastAnyAlertAt = 0;
   lastAlertAt = 0;
   lastAlertState = "unknown";
+  lastAlertProcessedState = "unknown";
+  segmentationRevision = 0;
+  lastRiskProcessedRevision = -1;
 
   if (audioContext && audioContext.state !== "closed") {
     void audioContext.close();
@@ -1801,11 +1885,10 @@ function enableAlerts(): void {
 
 async function testDangerAlert(): Promise<void> {
   enableAlerts();
-  lastAlertState = "danger";
-  lastAlertAt = performance.now();
+  currentRiskState = "danger";
+  lastAlertProcessedState = "warn";
+  maybeTriggerAlert(performance.now());
   applyVisualAlert("danger");
-  await playBeepPattern(ALERT_PROFILES.danger.beepPattern, ALERT_PROFILES.danger.beepFrequency);
-  vibratePattern(ALERT_PROFILES.danger.vibrationPattern);
 }
 
 function renderLoop(now: number): void {
@@ -1826,12 +1909,22 @@ function renderLoop(now: number): void {
     void ensureRoadSegLoad();
   }
 
-  updateCoverageMetrics();
-  syncRiskState(now);
   renderOverlayFrame(ROAD_SEG_INPUT_W, ROAD_SEG_INPUT_H);
-  updateRiskUi();
+  const hasNewSegmentation = segmentationRevision !== lastRiskProcessedRevision;
+
+  if (hasNewSegmentation) {
+    updateCoverageMetrics();
+    syncRiskState(now);
+
+    lastRiskProcessedRevision = segmentationRevision;
+
+    updateRiskUi();
+    maybeTriggerAlert(now);
+  } else {
+    updateRiskUi();
+  }
+
   updateCommonUi();
-  maybeTriggerAlert(now);
 
   rafId = window.requestAnimationFrame(renderLoop);
 }

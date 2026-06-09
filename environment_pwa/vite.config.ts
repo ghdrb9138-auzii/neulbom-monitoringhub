@@ -50,6 +50,7 @@ function noModelHtmlFallbackPlugin() {
 }
 
 export default defineConfig({
+  base: process.env.NODE_ENV === 'production' ? '/neulbom-monitoringhub/' : '/',
   server: {
     host: true,
     port: 5176,
