@@ -134,6 +134,8 @@ const DANGER_ENTER_NEAR_ROAD = 0.48;
 const DANGER_EXIT_NEAR_ROAD = 0.34;
 const CROSSWALK_ENTER = 0.22;
 const CROSSWALK_EXIT = 0.14;
+const GROUND_CONFIDENCE_MIN = 0.14;
+const SIDEWALK_DROP_WARN = 0.25;
 const RISK_VOTE_WINDOW = 4;
 
 // If the local SegFormer model fails with 384x384 on a device, set SEG_INPUT_SIZE_FAST back to 512
@@ -506,7 +508,6 @@ let lastAlertProcessedState: RiskState = "unknown";
 let audioContext: AudioContext | null = null;
 let alertsEnabled = false;
 let lastAlertAt = 0;
-let lastAlertState: RiskState = "unknown";
 let lastHeartbeatAlertAt = 0;
 let lastInferenceMs = 0;
 let lastSegAt = 0;
@@ -1293,11 +1294,19 @@ function deriveRawRiskState(): RiskState {
     return "warn";
   }
 
+  const sidewalkDrop =
+    nearSidewalk !== null && lookaheadSidewalk !== null
+      ? nearSidewalk - lookaheadSidewalk
+      : 0;
+  const hasRoadOrCurbAhead =
+    (lookaheadRoad !== null && lookaheadRoad >= WARN_ENTER_LOOKAHEAD_ROAD) ||
+    (lookaheadCurb !== null && lookaheadCurb >= LOOKAHEAD_CURB_WARN);
+
   if (
     nearSidewalk !== null &&
     nearSidewalk >= ON_SIDEWALK_MIN &&
-    lookaheadSidewalk !== null &&
-    lookaheadSidewalk < nearSidewalk
+    sidewalkDrop >= SIDEWALK_DROP_WARN &&
+    hasRoadOrCurbAhead
   ) {
     return "warn";
   }
@@ -1326,16 +1335,23 @@ function isHardDanger(): boolean {
 }
 
 function getGroundCoverageTotal(): number {
-  return (
+  const nearTotal =
     (nearSidewalkCoverageKnown ? nearSidewalkCoverage : 0) +
     (nearRoadCoverageKnown ? nearRoadCoverage : 0) +
     (nearCrosswalkCoverageKnown ? nearCrosswalkCoverage : 0) +
-    (nearCurbCoverageKnown ? nearCurbCoverage : 0)
-  );
+    (nearCurbCoverageKnown ? nearCurbCoverage : 0);
+
+  const lookaheadTotal =
+    (lookaheadSidewalkCoverageKnown ? lookaheadSidewalkCoverage : 0) +
+    (lookaheadRoadCoverageKnown ? lookaheadRoadCoverage : 0) +
+    (lookaheadCrosswalkCoverageKnown ? lookaheadCrosswalkCoverage : 0) +
+    (lookaheadCurbCoverageKnown ? lookaheadCurbCoverage : 0);
+
+  return Math.max(nearTotal, lookaheadTotal);
 }
 
 function syncRiskState(now: number): void {
-  if (!imageTestMode && getGroundCoverageTotal() < 0.18) {
+  if (!imageTestMode && getGroundCoverageTotal() < GROUND_CONFIDENCE_MIN) {
     rawRiskState = "unknown";
     votedRiskState = currentRiskState;
     return;
@@ -1522,7 +1538,6 @@ function vibratePattern(pattern: number[]): void {
 }
 
 function triggerAlertNow(profile: AlertProfile, now: number): void {
-  lastAlertState = profile.state;
   lastAlertProcessedState = profile.state;
   lastAlertAt = now;
   lastHeartbeatAlertAt = now;
@@ -1543,7 +1558,6 @@ function maybeTriggerAlertHeartbeat(now: number): void {
   if (severity === 0 || profile.cooldownMs <= 0) return;
 
   const previousSeverity = getRiskSeverity(lastAlertProcessedState);
-  const stateChanged = lastAlertState !== currentRiskState;
   const severityRaised = severity > previousSeverity;
   const heartbeatInterval =
     currentRiskState === "danger"
@@ -1554,7 +1568,7 @@ function maybeTriggerAlertHeartbeat(now: number): void {
   const heartbeatDue = now - lastHeartbeatAlertAt >= heartbeatInterval;
   const profileCooldownDue = now - lastAlertAt >= profile.cooldownMs;
 
-  if (stateChanged || severityRaised || heartbeatDue || profileCooldownDue) {
+  if (severityRaised || heartbeatDue || profileCooldownDue) {
     triggerAlertNow(profile, now);
   }
 }
@@ -1960,7 +1974,6 @@ async function start(): Promise<void> {
     lastOverlayDrawRevision = -1;
     lastAlertProcessedState = "unknown";
     lastAlertAt = 0;
-    lastAlertState = "unknown";
     lastPreviewDrawAt = 0;
     lastCommonUiAt = 0;
     lastInferenceMs = 0;
@@ -2014,7 +2027,6 @@ function stop(): void {
   document.body.classList.remove("live-mode");
 
   lastAlertAt = 0;
-  lastAlertState = "unknown";
   lastAlertProcessedState = "unknown";
   lastHeartbeatAlertAt = 0;
   lastInferenceMs = 0;
@@ -2028,11 +2040,6 @@ function stop(): void {
   lastPreviewDrawAt = 0;
   lastCommonUiAt = 0;
   riskVoteHistory = [];
-
-  if (audioContext && audioContext.state !== "closed") {
-    void audioContext.close();
-  }
-  audioContext = null;
 
   const currentStream = stream;
   stream = null;
@@ -2059,12 +2066,19 @@ async function enableAlerts(): Promise<void> {
 
 async function testDangerAlert(): Promise<void> {
   await enableAlerts();
+  const previousState = currentRiskState;
   currentRiskState = "danger";
-  lastAlertState = "unknown";
   lastAlertProcessedState = "unknown";
   lastHeartbeatAlertAt = 0;
   maybeTriggerAlert(performance.now());
   applyVisualAlert("danger");
+  updateRiskUi();
+
+  window.setTimeout(() => {
+    currentRiskState = previousState;
+    applyVisualAlert(previousState);
+    updateRiskUi();
+  }, 1800);
 }
 
 function renderLoop(now: number): void {
