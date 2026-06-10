@@ -498,6 +498,33 @@ body.live-mode .video-frame {
   color: #475569;
 }
 
+.perf-metrics {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.perf-metric {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.04);
+  color: #0f172a;
+}
+
+.perf-metric span {
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.perf-metric strong {
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .details {
   display: grid;
   gap: 10px;
